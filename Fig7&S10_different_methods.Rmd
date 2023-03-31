@@ -1,0 +1,494 @@
+---
+title: "Fig6&S6"
+author: "TYJ"
+date: '2022-05-18'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, background="transparent", fig.align='center' }
+knitr::opts_chunk$set(echo = F, include = T, highlight = T, warning = F, fig.align = "c")
+options(knitr.kable.NA = '')
+library(pheatmap)
+library(grid)
+library(data.table)
+library(GenomicRanges)
+library(tidyverse)
+source("D:/SUST/code/TanYongjun_code.R")
+```
+
+# Four methods
+
+# . upset plot (Overlap among four sets of enhancers)
+Steps:
+  1. generate list of unique regions. (600bp width). When merge overlapped regions and resize to generate list of  unique CREs, the total number will not match.
+  2. generate overlap maptrix (unique regions X Four sets of enhancers) and upset plot.
+  3. manually correct numbers in the upset plot.
+Attention:
+  Overlap between regions may lead to several adjacent CRE (in same dateset) located in the same unique region.
+  The "unique regions" list contains redundant peaks. But the rmdup was challenge because width of regions varied and more than two regions may overlapped to form cluster. (比如多个相邻的STARRseq enhancer可能都与另外一个enhancer重叠，如果简单进行merge，会导致upset plot中各类enhancer总数下降)。
+  
+```{r, cSTARRseq 1.3}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  enhancer <- fread(file = "./Enhancer_Four_types_Random_PAS_all_20220420.csv.gz") %>%
+    dplyr::filter(str_detect(method, "iSTARR|PAS|Random", negate = T),
+                  seqnames != "Mt") %>%
+    dplyr::mutate(start = startBK, end = endBK) %>%
+    dplyr::select(seqnames:end, method) %>%
+    dplyr::mutate(method = str_replace_all(method, c("cSTARR-seq" = "Enhancer_STARRseq",
+                                                     "IntronicEnhancer" = "Enhancer_Meng2021")),
+                  method = toolkit_tyj$Format_En_lev(method) %>% as.character(),
+                  ID = str_c(method, seqnames, start, sep = "_"))
+  
+  # Only keep 941 intronic enhancers
+    table(enhancer$method)
+    tmp1 <- enhancer %>%
+      dplyr::filter(method != "Meng2021")
+    tmp2 <- enhancer %>%
+      dplyr::filter(method == "Meng2021")
+    
+    # discard Intronic enhancers overlapped with distal-DHS enhancer.
+    tmpDistal <- enhancer %>%
+      dplyr::filter(method == "Zhu2015") %>%
+      GenomicRanges::makeGRangesFromDataFrame(.) %>%
+      GenomicRanges::resize(width = 600, fix = "center")
+    ol <- findOverlaps(tmpDistal, 
+                       makeGRangesFromDataFrame(tmp2) %>% GenomicRanges::resize(width = 600, fix = "center"))
+    set.seed(1234567)
+    tmp2 <- tmp2[-unique(ol@to),] %>%
+      slice_sample(n = 941, replace = F)
+    
+    enhancer <- rbind(tmp1, tmp2)
+    table(enhancer$method)
+    rm(tmp1, tmp2)
+  
+  # to GR object
+  enhancerGR <- enhancer %>%
+    split(.$method) %>%
+    map(., GenomicRanges::makeGRangesFromDataFrame, keep.extra.columns = T)
+  
+## Count overlap between enhancers identified by varied methods.
+  df <- combn(names(enhancerGR), m = 2) %>% t() %>% as.data.frame()
+  df$Num_1 <- df$Num_2 <- df$Num_ov <- NULL
+  for (i in 1:nrow(df)) {
+    n1 <- df$V1[i]
+    n2 <- df$V2[i]
+    cat(">>>>  ", n1, "<=>", n2, ";\n")
+    tmp1 <- enhancerGR[[n1]]
+    tmp2 <- enhancerGR[[n2]]
+    ol <- findOverlaps(tmp1, tmp2, minoverlap = 1)
+    
+    # count
+    df$Num_1[i] <- length(tmp1)
+    df$Num_2[i] <- length(tmp2)
+    df$Num_ov[i] <- length(unique(ol@from)) # number of overlapped regions
+  }
+  df$Percent_1 <- df$Num_ov / df$Num_1
+  df$Percent_2 <- df$Num_ov / df$Num_2
+  
+  fwrite(df, file = "./R3.enhancer_DistalDHS_H3K4me1/Overlaps_1bp_cenhancers1.3_STARR_DHS_H3K4_941IntronicEn_202210.csv")
+
+
+## the generate overlap information table: row for enhancer; column for method; value 1 and 0 represent overlapped or not.
+  # generate table of unique regions (600bp center of each region or merged region).
+  map(enhancerGR, function(x){quantile(width(x), probs = seq(0,1,0.1))})
+  
+  over_table <- enhancer %>% 
+    makeGRangesFromDataFrame() %>%
+    GenomicRanges::resize(., width = 600, fix = "center") %>%
+    GenomicRanges::reduce() %>%
+    GenomicRanges::resize(., width = 600, fix = "center") %>%
+    as.data.frame() %>%
+    mutate(Enhancer_STARRseq = 0, Enhancer_Zhu2015 = 0, Enhancer_Wang2019 = 0, Enhancer_Meng2021 = 0)
+  
+  over_tableGR <- makeGRangesFromDataFrame(over_table)
+  for (i in 1:length(enhancerGR)) {
+    id_tmp <- names(enhancerGR)[i]
+    ol <- findOverlaps(over_tableGR, 
+                       enhancerGR[[i]]
+                       # GenomicRanges::resize(enhancerGR[[i]], width = 1, fix = "center")
+                       )
+    over_table[unique(ol@from),
+               str_detect(colnames(over_table), id_tmp)] <- 1
+  }
+  
+  # clean 
+  colnames(over_table) <- str_replace_all(colnames(over_table), "Enhancer_","")
+  
+  # upsetR
+  # discard overlapped enhancers which were repeatedly count in the table.
+  library(UpSetR)
+  require(ggplot2); require(plyr); require(gridExtra); require(grid);
+  
+  map_int(enhancerGR, length) %>% sort
+  colSums(over_table[,6:9]) %>% sort
+  
+  # discard overlap between Meng2021 and Zhu2015 due to unique region generation.
+  over_table$Meng2021[over_table$Meng2021 == 1 & over_table$Zhu2015 == 1] <- 0
+  
+  # png("./R3.enhancer_DistalDHS_H3K4me1/UpsetPlot_Four_methods_enhancers_overlap.png",
+  #       width = 8, height = 6, units = "cm", res = 600)
+  pdf("./R3.enhancer_DistalDHS_H3K4me1/UpsetPlot_Four_methods_enhancers_overlap.pdf",
+          width = 9/.pt, height = 6/.pt)
+    upset(over_table, 
+          sets = unique(enhancer$method) %>% as.character(), 
+          order.by = c("freq", "degree"), 
+          decreasing = c(TRUE,FALSE),
+          set_size.numbers_size = 6,
+          set_size.scale_max = 9500,
+          set_size.show = T,
+          point.size = 0.8, 
+          line.size = 0.2,
+          sets.bar.color = toolkit_tyj$AtEn_FourMethods_color[c(2,1,3,4)],
+          text.scale = 0.8)
+  dev.off()
+  
+  # regions hit by varied kind of enhancers.
+  # over_table$Sum = apply(over_table[,6:9], 1, sum)
+
+```
+
+
+# Distribution (TSS-TTS)----------
+
+### .Enhancer identified by four methods
+*Add intronic enhancer 202106*
+```{r}
+# calculate the relative bins according to gene body.
+rm(list = ls())
+load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+# load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_iSTARR_cSTARR_20210415.bin")
+source("D:/SUST/code/TanYongjun_code.R")
+anno_table <- anno_list %>% 
+  map(., as.data.frame) %>%
+  purrr::reduce(rbind) %>%
+  toolkit_tyj$relativeBins2TSS(flank.region = 5000, bins_flank = 50, bins_gene = 50, flank_scale = 1) %>%
+  dplyr::mutate(method = str_replace_all(method, c("IntronicEnhancer" = "Enhancer_Meng2021", 
+                                           "cSTARR-seq" = "Enhancer_STARRseq")))
+
+### Enhancer, PAS, Random------------
+# normalized to random
+  df <- anno_table %>%
+    dplyr::select(method:Type, relativeBins) %>%
+    dplyr::mutate(Type = str_replace_all(method, "-", "_")) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, Type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = Type, 
+                values_from = Num, values_fill = 0) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR|Random)")) %>%
+    pivot_wider(id_cols = c(relativeBins), names_from = name, values_from = value) 
+  
+  df <- cbind(df$relativeBins, scale(df[,2:ncol(df)]))%>%
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR)")) %>%
+    dplyr::mutate(NormedValue = value - Random)
+  
+  # plot all
+  library(ggformula)
+  df %>%
+    dplyr::filter(str_detect(name, "(iSTARR|PAS)", negate = T)) %>%
+    dplyr::mutate(name = toolkit_tyj$Format_En_lev(name) )%>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.2, ymax = -2.8, fill = "grey80") +
+      geom_text(x = 25, y = -3, label = "Gene body", size = 1.8, color = "grey30") +
+      geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      # geom_line() +
+      geom_spline(aes(x = relativeBins, color = name, y = NormedValue, linetype = name)) +
+      # scale_color_manual(values = pal_npg(palette = "nrc")(9)[c(1, 2, 3, 4, 6)]) +
+      scale_color_npg() +
+      scale_linetype_manual(values = c(1,2,2,2,2)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.83, 0.22),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          legend.key.height = unit(0.25, units = "cm")) 
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_TTS_TSS_STARR_DHS_20210606",
+  #                      width = 8, height = 6)
+
+  
+# Not normalized
+  df <- anno_table %>%
+    dplyr::select(method:Type, relativeBins) %>%
+    dplyr::mutate(Type = str_replace_all(method, "-", "_")) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, Type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = Type, 
+                values_from = Num, values_fill = 0) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR|Random)")) %>%
+    pivot_wider(id_cols = c(relativeBins), names_from = name, values_from = value) 
+  
+  df <- cbind(df$relativeBins, scale(df[,2:ncol(df)]))%>%
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR|Random)")) 
+  
+  # plot all
+  library(ggformula)
+  df %>%
+    dplyr::filter(str_detect(name, "(iSTARR|PAS)", negate = T)) %>%
+    dplyr::mutate(name = toolkit_tyj$Format_En_lev(name)) %>%
+    # dplyr::filter(str_detect(name, "Random|Enhancer")) %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.2, ymax = -2.8, fill = "grey80") +
+      geom_text(x = 25, y = -3, label = "Gene body", size = 1.8, color = "grey30") +
+      # geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      # geom_line() +
+      geom_spline(aes(x = relativeBins, color = name, y = value, linetype = name)) +
+      # scale_color_manual(values = pal_npg(palette = "nrc")(9)[c(1, 2, 3, 4, 6)]) +
+      scale_color_manual(values = toolkit_tyj$AtEn_FourMethods_color) +
+      scale_linetype_manual(values = c(1,1,1,1,2)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.83, 0.82),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          legend.key.height = unit(0.25, units = "cm")) 
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_notNormed_TTS_TSS_Enhancer_fourMethods_20210606",
+                       width = 8, height = 6)
+
+```
+
+# Distribution (GAT)-----------
+`4.1.3`
+
+
+# Overlap TE ---------------
+
+`Fig5&S5`
+
+Overlap between TE family/superfamily and CRE
+
+## collect results 202106
+```{r, 20210629 }
+# load
+  rm(list = ls())
+  te_info <- fread("./refgenome/TAIR10_Transposable_Elements_20210510_aquired.txt") %>%
+    dplyr::mutate(seqnames = str_replace_all(Transposon_Name, "AT(\\d)TE.+", "\\1"), 
+                  strand = ifelse(orientation_is_5prime == "TRUE", "+", "-"), 
+                  start = Transposon_min_Start, 
+                  end = Transposon_max_End) %>%
+    dplyr::select(matches("Family")) %>%
+    distinct()
+
+  source("D:/SUST/code/TanYongjun_code.R")
+  df <- NULL
+  for (i in list.files(path = "./R4.Distribution_of_enhancers/TEs/",
+                       pattern = "CRE_ol_TEs.+20210629.tsv")) {
+    id <- str_replace_all(i, "CRE_ol_TEs_GAT_(.+)20210629.tsv", "\\1")
+    df <- fread(str_c("./R4.Distribution_of_enhancers/TEs/", i, sep = "")) %>%
+      dplyr::mutate(TE_lev = id,
+                    SigLabel = toolkit_tyj$returnAsterisk(qvalue),
+                    label = str_c(round(fold, digits = 2), " (", SigLabel, ")"),
+                    label1 = str_c(round(fold, digits = 2), "\n", SigLabel),
+                    annotation = str_replace_all(annotation, "cSTARR-seq", "Enhancer_STARRseq"),
+                    track = str_c(track, " (n=", track_nsegments, ")", sep = ""),
+                    track = str_replace_all(track, "TE_TAIR10", "All_TEs")) %>%
+      rbind(., df)
+  }
+  table(df$annotation, df$TE_lev)
+  df$track <- str_replace_all(df$track, "_","/")
+```
+
+## . Barplot (each CRE)
+
+### . percentage of CRE ov TEs (length)
+
+#### . Four methods
+
+```{r}
+ # selecte top TE families.
+  top_family <- df %>%
+    dplyr::filter(TE_lev == "superFamily", annotation == "Enhancer_STARRseq") %>%
+    dplyr::select(track, overlap_size) %>%
+    distinct() %>%
+    arrange(desc(overlap_size)) %>%
+    dplyr::mutate(Track_format = str_replace_all(as.character(track), "\\s\\(.+", ""),
+                  Track_format = str_replace_all(Track_format, "_", "/")) %>%
+    head(n = 8)
+
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_)"), TE_lev == "superFamily") %>%
+    dplyr::mutate(observed = observed / annotation_size,
+                  expected = expected / annotation_size,
+                  track = ifelse(track %in% top_family$track, track, "Other"),
+                  Track_format = str_replace_all(as.character(track), "\\s\\(.+", ""),
+                  Track_format = str_replace_all(Track_format, "_", "/")) %>%
+    group_by(track, annotation, Track_format) %>%
+    dplyr::summarise(observed = sum(observed), expected = sum(expected)) %>%
+    ungroup() %>%
+    dplyr::mutate(expected = ifelse(annotation != "Enhancer_STARRseq", NA, expected)) %>%
+    pivot_longer(cols = c(observed, expected), names_to = "Type", values_to = "Rate") %>% 
+    na.omit %>%
+    dplyr::mutate(Type = ifelse(Type == "expected", "Random", annotation),
+                  Track_format = factor(Track_format, levels = c(top_family$Track_format, "Other"))) %>%
+    arrange(Track_format) %>%    
+    dplyr::mutate(Type = toolkit_tyj$Format_En_lev(Type)) 
+  
+  df_lab <- df_tmp %>%
+    group_by(annotation, Type) %>%
+    dplyr::summarise(SumRate = sum(Rate))
+
+  ggplot() + 
+      toolkit_tyj$theme_my + 
+      geom_col(data = df_tmp,aes(x = Type, y = Rate, fill = Track_format)) + 
+      # facet_grid(. ~ annotation) +
+      # scale_fill_manual(values = c(pal_npg("nrc")(8), "grey65")) +
+      scale_fill_brewer(palette = "Paired") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.x = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -8)) + 
+      guides(fill = guide_legend(title = "Super Family")) +
+      ylab("Percentage") +
+      scale_y_continuous(labels = scales::percent) + 
+      geom_text(data = df_lab, aes(x = Type, y = SumRate + 0.01, label = percent(SumRate, accuracy = 0.01)),
+                size = 5/.pt)
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Percentage_Enhancer_fourmethods_overlap_TE_superfamily_20220521",
+                       width = 6, height = 6)
+```
+
+### . FC of overlap
+
+#### . Enhancers four methods
+```{r}
+  top_family <- df %>%
+    dplyr::filter(TE_lev == "superFamily", annotation == "Enhancer_STARRseq") %>%
+    dplyr::select(track, overlap_size) %>%
+    distinct() %>%
+    # dplyr::filter(overlap_size > 0) %>%
+    arrange(desc(overlap_size)) %>%
+    head(., n = 8) 
+
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_)"), TE_lev == "superFamily",
+                  track %in% top_family$track) %>%
+    dplyr::mutate(track = factor(track, top_family$track)) %>%
+    arrange(track) %>%
+    dplyr::mutate(annotation = str_replace_all(annotation, "Enhancer_", "En_"),
+                  annotation = toolkit_tyj$Format_En_lev(annotation))
+    # dplyr::mutate(observed = observed / annotation_size,
+    #               expected = expected / annotation_size,
+    #               track = ifelse(track %in% top_family$track, track, "Other")) %>%
+    # group_by(track, annotation) %>%
+    # summarise(observed = sum(observed), expected = sum(expected)) %>%
+    # ungroup() 
+  
+  df_tmp %>%
+    ggplot(aes(y = track, x = l2fold, fill = l2fold)) + 
+      toolkit_tyj$theme_my + 
+      geom_col(size = 0.2) + 
+      facet_grid(. ~ annotation) +
+      scale_fill_gradientn(colors = brewer.pal(11, "RdYlGn")[c(2,6:10)] %>% rev) +
+      # scale_fill_brewer(palette = "Paired") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.y = element_blank(),
+            legend.key.width  = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -5),
+            panel.spacing = unit(0.08, "cm")) + 
+      guides(fill = guide_colourbar(title = expression(log[10]^(FC)))) +
+      scale_y_discrete(labels = function(x){str_replace_all(x, "\\(", "\n\\(")},
+                       limits = rev) +
+      ylab("Percentage") +
+      geom_text(aes(x = ifelse(abs(l2fold) < 2, l2fold + (l2fold^0) * 2, l2fold/2),
+                    y = track, label = SigLabel), size = 5/.pt) +
+      xlab(expression(log[10]^(Fold~change)))
+      
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Barplot_fold_change_TEsuperfamily_ol_four_enhancers_1_20220521",
+                       width = 8, height = 6)
+```
+
+
+
+# Overlap (En vs Conserved elements)
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R8.conservation/ConservedElements_ol_GAT_results_all_20210630.tsv") %>%
+    dplyr::mutate(percent_overlap_size_annotation = percent_overlap_size_annotation / 100,
+                  annotation = toolkit_tyj$Format_En_lev(annotation),
+                  qvalue = p.adjust(pvalue, method = "BH"),
+                  label = str_c(scales::percent(percent_overlap_size_annotation, accuracy = 0.01),
+                                "\nFC=", format(fold, digits = 2), "\n", toolkit_tyj$returnAsterisk(qvalue)),
+                  observed = observed / annotation_size,
+                  expected  = expected / annotation_size)
+  
+  # Enhancers identified by four methods
+  results_sig %>%
+    ggplot(aes(x = annotation, y = percent_overlap_size_annotation)) + 
+      geom_col(aes(fill = annotation), alpha = 3/4) + 
+      toolkit_tyj$theme_my + 
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.title = element_blank(),
+            legend.margin = margin(-8,0,0,-8), 
+            legend.key.size = unit(0.3, "cm"),
+            text = element_text(face = "plain")) +
+      scale_y_continuous(labels = scales::percent) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_FourMethods_color) +
+      geom_text(aes(y = percent_overlap_size_annotation / 2, label = label), size = 5/.pt) + 
+      ylab("Enhancers overlaped with conserved elements")
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R8.conservation/ConservedElements_ol_GAT_results_BarPlot_20210514",
+                       width = 6, height = 6)
+  
+  # only Enhancer_STARRseq
+  results_sig %>%
+    dplyr::filter(annotation == "En_STARRseq") %>%
+    pivot_longer(cols = c(expected, observed), names_to = "Type", values_to = "percent") %>%
+    dplyr::mutate(Type = str_replace_all(Type, c("observed" = "Observed", 
+                                                 "expected" = "Expected")),
+                  Type = factor(Type, levels = c("Observed", "Expected"))) %>%
+    ggplot(aes(x = Type, y = percent)) + 
+      geom_col(aes(fill = Type), alpha = 2/3) + 
+      toolkit_tyj$theme_my + 
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      scale_y_continuous(labels = scales::percent) + 
+      geom_text(aes(y = percent / 2, label = percent(percent, accuracy = 0.01)), size = 5/.pt) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_color[c(1, 5)]) +
+      ylab("Enhancers overlaped with conserved elements") +
+      geom_signif(annotations = "FC=1.42\np<0.001",
+                  y_position = 0.4, xmin = 1, xmax = 2,textsize  = 6/.pt, size = 0.2) + 
+      theme(legend.position = "none") + 
+      coord_cartesian(ylim = c(0, 0.46))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R8.conservation/ConservedElements_ol_Enhancer_STARRseq_GAT_results_BarPlot_20220520",
+                       width = 5, height = 6)
+  
+  
+```
+
+
+# TFs
+ Related code was contained in `Fig3&S3.rmd`
+ 
+
+# Revise (add super enhancers and enhancers identified by Yan et al.)
+
+
+
+
+

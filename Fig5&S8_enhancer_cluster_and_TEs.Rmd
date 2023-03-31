@@ -1,0 +1,1009 @@
+---
+title: "Fig5&S5"
+author: "TYJ"
+date: '2022-05-18'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, background="transparent", fig.align='center' }
+knitr::opts_chunk$set(echo = F, include = T, highlight = T, warning = F, fig.align = "c")
+options(knitr.kable.NA = '')
+library(pheatmap)
+library(grid)
+library(data.table)
+library(GenomicRanges)
+library(tidyverse)
+source("D:/SUST/code/TanYongjun_code.R")
+```
+
+
+# GAT
+Overlap between TE family/superfamily and CRE
+
+## collect results 202106
+```{r, 20210629 }
+# load
+  rm(list = ls())
+  te_info <- fread("./refgenome/TAIR10_Transposable_Elements_20210510_aquired.txt") %>%
+    dplyr::mutate(seqnames = str_replace_all(Transposon_Name, "AT(\\d)TE.+", "\\1"), 
+                  strand = ifelse(orientation_is_5prime == "TRUE", "+", "-"), 
+                  start = Transposon_min_Start, 
+                  end = Transposon_max_End) %>%
+    dplyr::select(matches("Family")) %>%
+    distinct()
+
+  source("D:/SUST/code/TanYongjun_code.R")
+  df <- NULL
+  for (i in list.files(path = "./R4.Distribution_of_enhancers/TEs/",
+                       pattern = "CRE_ol_TEs.+20210629.tsv")) {
+    id <- str_replace_all(i, "CRE_ol_TEs_GAT_(.+)20210629.tsv", "\\1")
+    df <- fread(str_c("./R4.Distribution_of_enhancers/TEs/", i, sep = "")) %>%
+      dplyr::mutate(TE_lev = id,
+                    SigLabel = toolkit_tyj$returnAsterisk(qvalue),
+                    label = str_c(round(fold, digits = 2), " (", SigLabel, ")"),
+                    annotation = str_replace_all(annotation, "cSTARR-seq", "Enhancer_STARRseq"),
+                    track = str_c(track, " (n=", track_nsegments, ")", sep = ""),
+                    track = str_replace_all(track, "TE_TAIR10", "All_TEs")) %>%
+      rbind(., df)
+  }
+  table(df$annotation, df$TE_lev)
+```
+
+## . Barplot (each CRE)
+
+### . percentage of CRE ov TEs (length)
+
+#### . En_STARR/Random
+```{r}
+  top_family <- df %>%
+    dplyr::filter(TE_lev == "superFamily", annotation == "Enhancer_STARRseq") %>%
+    dplyr::select(track, overlap_size) %>%
+    distinct() %>%
+    arrange(desc(overlap_size)) %>%
+    dplyr::mutate(Track_format = str_replace_all(as.character(track), "\\s\\(.+", "")) %>%
+    head(n = 8)
+
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_STARR)"), TE_lev == "superFamily") %>%
+    dplyr::mutate(observed = observed / annotation_size,
+                  expected = expected / annotation_size,
+                  track = ifelse(track %in% top_family$track, track, "Other"),
+                  Track_format = str_replace_all(as.character(track), "\\s\\(.+", "")) %>%
+    group_by(track, annotation, Track_format) %>%
+    summarise(observed = sum(observed), expected = sum(expected)) %>%
+    ungroup() 
+    
+  
+  df_tmp %>%
+    pivot_longer(cols = c(observed, expected), names_to = "Type", values_to = "Rate") %>%
+    dplyr::mutate(Track_format = factor(Track_format, levels = c(top_family$Track_format, "Other"))) %>%
+    arrange(Track_format) %>%    
+    dplyr::mutate(Type = str_replace_all(Type, c("expected" = "Random",
+                                                 "observed" = "Enhancer\nSTARRseq"))) %>%
+
+    ggplot(aes(x = Type, y = Rate, fill = Track_format)) + 
+      toolkit_tyj$theme_my + 
+      geom_col() + 
+      # scale_fill_manual(values = c(pal_npg("nrc")(8), "grey65")) +
+      scale_fill_brewer(palette = "Paired") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.x = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -8)) + 
+      guides(fill = guide_legend(title = "Super Family")) +
+      ylab("Percentage") +
+      scale_y_continuous(labels = scales::percent)
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Percentage_Enhancer_STARRseq_overlap_TE_superfamily_20220521",
+  #                      width = 4.5, height = 6, device = c("png", "pdf"))
+```
+
+#### . En, Cluster, and Random
+```{r}
+  top_family <- df %>%
+    dplyr::filter(TE_lev == "superFamily", annotation == "Enhancer_STARRseq") %>%
+    dplyr::select(track, overlap_size) %>%
+    distinct() %>%
+    arrange(desc(overlap_size)) %>%
+    dplyr::mutate(Track_format = str_replace_all(as.character(track), "\\s\\(.+", "")) %>%
+    head(n = 8)
+
+  # All enhancers and Random
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_STARR)"), TE_lev == "superFamily") %>%
+    dplyr::mutate(observed = observed / annotation_size,
+                  expected = expected / annotation_size,
+                  track = ifelse(track %in% top_family$track, track, "Other"),
+                  Track_format = str_replace_all(as.character(track), "\\s\\(.+", "")) %>%
+    group_by(track, annotation, Track_format) %>%
+    dplyr::summarise(observed = sum(observed), expected = sum(expected)) %>%
+    ungroup() %>%
+    pivot_longer(cols = c(observed, expected), names_to = "Type", values_to = "Rate")
+    
+  # Kmeans cluster
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "KmeansCluster"), TE_lev == "superFamily") %>%
+    dplyr::mutate(observed = observed / annotation_size,
+                  expected = expected / annotation_size,
+                  track = ifelse(track %in% top_family$track, track, "Other"),
+                  Track_format = str_replace_all(as.character(track), "\\s\\(.+", "")) %>%
+    group_by(track, annotation, Track_format) %>%
+    dplyr::summarise(observed = sum(observed), expected = sum(expected)) %>%
+    ungroup() %>%
+    dplyr::mutate(Type = str_replace_all(annotation, "KmeansCluster", "C"), Rate = observed) %>%
+    dplyr::select(-observed, -expected) %>%
+    rbind(., df_tmp) %>%
+    dplyr::mutate(Track_format = factor(Track_format, levels = c(top_family$Track_format, "Other"))) %>%
+    arrange(Track_format) %>%    
+    dplyr::mutate(Type = str_replace_all(Type, c("expected" = "Random",
+                                                 "observed" = "Enhancer\nSTARRseq")),
+                  Type = factor(Type, levels = c("Enhancer\nSTARRseq", "C1", "C2", "C3", "C4", "Random")))
+  
+  df_tmp_lab <- df_tmp %>%
+    group_by(annotation, Type) %>%
+    dplyr::summarise(TotalRate = sum(Rate))
+
+   
+  ggplot(aes(x = Type, y = Rate), data = df_tmp) + 
+      toolkit_tyj$theme_my + 
+      geom_col(aes(fill = Track_format)) + 
+      # scale_fill_manual(values = c(pal_npg("nrc")(8), "grey65")) +
+      scale_fill_brewer(palette = "Paired") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.x = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -8)) + 
+      guides(fill = guide_legend(title = "Super Family")) +
+      ylab("Percentage") +
+      scale_y_continuous(labels = scales::percent) + 
+      geom_text(data = df_tmp_lab, 
+                aes(x = Type, y = TotalRate, label = scales::percent(TotalRate, accuracy = 0.01)),
+                size = 6/.pt, nudge_y = 0.03)
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Percentage_Enhancer_STARRseq_KmeansCluster_overlap_TE_superfamily_20220521",
+                       width = 7, height = 6.16, device = c("png", "pdf"))
+```
+
+
+#### . Four methods
+
+```{r}
+ # selecte top TE families.
+  top_family <- df %>%
+    dplyr::filter(TE_lev == "superFamily", annotation == "Enhancer_STARRseq") %>%
+    dplyr::select(track, overlap_size) %>%
+    distinct() %>%
+    arrange(desc(overlap_size)) %>%
+    dplyr::mutate(Track_format = str_replace_all(as.character(track), "\\s\\(.+", "")) %>%
+    head(n = 8)
+
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_)"), TE_lev == "superFamily") %>%
+    dplyr::mutate(observed = observed / annotation_size,
+                  expected = expected / annotation_size,
+                  track = ifelse(track %in% top_family$track, track, "Other"),
+                  Track_format = str_replace_all(as.character(track), "\\s\\(.+", "")) %>%
+    group_by(track, annotation, Track_format) %>%
+    summarise(observed = sum(observed), expected = sum(expected)) %>%
+    ungroup() %>%
+    dplyr::mutate(expected = ifelse(annotation != "Enhancer_STARRseq", NA, expected)) %>%
+    pivot_longer(cols = c(observed, expected), names_to = "Type", values_to = "Rate") %>% 
+    na.omit %>%
+    dplyr::mutate(Type = ifelse(Type == "expected", "Random", annotation),
+                  Track_format = factor(Track_format, levels = c(top_family$Track_format, "Other"))) %>%
+    arrange(Track_format) %>%    
+    dplyr::mutate(Type = str_replace_all(Type, c("expected" = "Random",
+                                                 "Enhancer_" = "En_")),
+                  Type = factor(Type, levels = c("En_STARRseq", "En_Zhu2015","En_Wang2019", "En_Meng2021", "Random"))) 
+  
+  df_tmp_lab <- df_tmp %>%
+    group_by(annotation, Type) %>%
+    dplyr::summarise(TotalRate = sum(Rate))
+  
+  ggplot() + 
+      toolkit_tyj$theme_my + 
+      geom_col(aes(x = Type, y = Rate, fill = Track_format), data = df_tmp) + 
+      # facet_grid(. ~ annotation) +
+      # scale_fill_manual(values = c(pal_npg("nrc")(8), "grey65")) +
+      scale_fill_brewer(palette = "Paired") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.x = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -8)) + 
+      guides(fill = guide_legend(title = "Super Family")) +
+      ylab("Percentage") +
+      scale_y_continuous(labels = scales::percent) + 
+      geom_text(data = df_tmp_lab, aes(x = Type, y = TotalRate, label = scales::percent(TotalRate, accuracy = 0.01)),
+                size = 6/.pt, nudge_y = 0.03) +
+      scale_x_discrete(expand = expansion(add = c(0.8, 0.8)))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Percentage_Enhancer_fourmethods_overlap_TE_superfamily_20220521",
+                       width = 6, height = 6)
+```
+
+### . percentage of TE ov Enhancer_STARRseq (length)
+```{r}
+
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_STARR)"), TE_lev == "superFamily") %>%
+    dplyr::mutate(observed = observed / track_size,
+                  expected = expected / track_size) %>%
+    arrange(desc(observed))
+    
+  ExpectedMedian <- median(df_tmp$expected)
+  
+  df_tmp %>%
+    pivot_longer(cols = c(observed, expected), names_to = "Type", values_to = "Rate") %>%
+    dplyr::mutate(track = factor(track, levels = df_tmp$track)) %>%
+    dplyr::mutate(Type = str_replace_all(Type, c("expected" = "Random",
+                                                 "observed" = "Enhancer\nSTARRseq"))) %>%
+    arrange(track) %>%
+    dplyr::filter(Type != "Random") %>%
+    ggplot(aes(x = track, y = Rate)) + 
+      toolkit_tyj$theme_my + 
+      geom_hline(yintercept = ExpectedMedian, linetype = 2, color = "grey25", size = 0.4) +
+      geom_col(fill = "steelblue", alpha = 2/3) + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.x = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -8)) + 
+      guides(fill = guide_legend(title = "Super Family")) +
+      geom_text(aes(x = track, y = ifelse(Rate > 0.1, Rate/2, Rate + 0.025),
+                    label = ifelse(Rate > ExpectedMedian, percent(Rate, accuracy = 0.01), "")),
+                angle = 90, size = 6/.pt) +
+      # geom_abs_text(xpos = 0.8, ypos = 0.4, label = scales::percent(ExpectedMedian, 0.01), size = 5/.pt) +
+      ylab("Percentage of TEs overlapped with enhancer") +
+      scale_y_continuous(labels = scales::percent, breaks = c(seq(0, 0.2, 0.05), ExpectedMedian))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Percentage_TE_superfamily_ov_EnhancerSTARR_20220521",
+                       width = 8, height = 6)
+```
+
+### . FC of overlap
+
+#### . Enhancer_STARRseq vs Random
+```{r}
+  top_family <- df %>%
+    dplyr::filter(TE_lev == "superFamily", annotation == "Enhancer_STARRseq") %>%
+    dplyr::select(track, overlap_size) %>%
+    distinct() %>%
+    # dplyr::filter(overlap_size > 0) %>%
+    arrange(desc(overlap_size)) %>%
+    head(., n = 8) 
+
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_STARR)"), TE_lev == "superFamily",
+                  track %in% top_family$track) %>%
+    dplyr::mutate(track = factor(track, top_family$track)) %>%
+    arrange(track)
+    # dplyr::mutate(observed = observed / annotation_size,
+    #               expected = expected / annotation_size,
+    #               track = ifelse(track %in% top_family$track, track, "Other")) %>%
+    # group_by(track, annotation) %>%
+    # summarise(observed = sum(observed), expected = sum(expected)) %>%
+    # ungroup() 
+  
+  df_tmp %>%
+    ggplot(aes(y = track, x = l2fold, fill = track)) + 
+      toolkit_tyj$theme_my + 
+      geom_col(size = 0.2) + 
+      # scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1],
+      #                      mid = brewer.pal(11, "RdYlGn")[6],
+      #                      low = brewer.pal(11, "RdYlGn")[9], midpoint = 0) +
+      scale_fill_brewer(palette = "Paired") +
+      theme(axis.title.y = element_blank(),
+            legend.key.width  = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -5),
+            axis.ticks.y = element_blank()) + 
+      guides(fill = guide_colourbar(title = expression(log[10]^(FC)))) +
+      scale_y_discrete(labels = function(x){str_replace_all(x, "\\(", "\n\\(")},
+                       limits = rev) +
+      ylab("Percentage") +
+      geom_text(aes(x = ifelse(abs(l2fold) < 2, l2fold + (l2fold^0) * 2, l2fold/2),
+                    y = track, label = SigLabel), size = 5/.pt) +
+      xlab(expression(log[10]^(Fold~change)))
+      
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Barplot_fold_change_TEsuperfamily_ol_Enhancer_1_20220521",
+                       width = 6, height = 5.75)
+```
+
+#### . Enhancers four methods
+```{r}
+  top_family <- df %>%
+    dplyr::filter(TE_lev == "superFamily", annotation == "Enhancer_STARRseq") %>%
+    dplyr::select(track, overlap_size) %>%
+    distinct() %>%
+    # dplyr::filter(overlap_size > 0) %>%
+    arrange(desc(overlap_size)) %>%
+    head(., n = 8) 
+
+  df_tmp <- df %>%
+    dplyr::filter(str_detect(annotation, "(Enhancer_)"), TE_lev == "superFamily",
+                  track %in% top_family$track) %>%
+    dplyr::mutate(track = factor(track, top_family$track)) %>%
+    arrange(track) %>%
+    dplyr::mutate(annotation = str_replace_all(annotation, "Enhancer_", "En_"),
+                  annotation = factor(annotation, levels = toolkit_tyj$AtEn_level_new))
+    # dplyr::mutate(observed = observed / annotation_size,
+    #               expected = expected / annotation_size,
+    #               track = ifelse(track %in% top_family$track, track, "Other")) %>%
+    # group_by(track, annotation) %>%
+    # summarise(observed = sum(observed), expected = sum(expected)) %>%
+    # ungroup() 
+  
+  df_tmp %>%
+    ggplot(aes(y = track, x = l2fold, fill = track)) + 
+      toolkit_tyj$theme_my + 
+      geom_col(size = 0.2) + 
+      facet_grid(. ~ annotation) +
+      # scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1],
+      #                      mid = brewer.pal(11, "RdYlGn")[6],
+      #                      low = brewer.pal(11, "RdYlGn")[9], midpoint = 0) +
+      scale_fill_brewer(palette = "Paired") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.y = element_blank(),
+            legend.key.width  = unit(0.3, units = "cm"),
+            legend.margin = margin(0, 0, 0, -5),
+            panel.spacing = unit(0.08, "cm")) + 
+      guides(fill = guide_colourbar(title = expression(log[10]^(FC)))) +
+      scale_y_discrete(labels = function(x){str_replace_all(x, "\\(", "\n\\(")},
+                       limits = rev) +
+      ylab("Percentage") +
+      geom_text(aes(x = ifelse(abs(l2fold) < 2, l2fold + (l2fold^0) * 2, l2fold/2),
+                    y = track, label = SigLabel), size = 5/.pt) +
+      xlab(expression(log[10]^(Fold~change)))
+      
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/Barplot_fold_change_TEsuperfamily_ol_four_enhancers_20220521",
+                       width = 8, height = 6)
+```
+
+
+## . Heatmap (each CRE)
+```{r}
+## each CRE as a whole-----------------
+  
+  ## all TEs + TE super family.
+    # plot
+    df %>%
+      dplyr::filter(str_detect(annotation, "(Enhancer_|Random)"), TE_lev != "Family20copies") %>%
+      dplyr::mutate(annotation = factor(annotation, levels = toolkit_tyj$AtEn_level)) %>%
+      ggplot(aes(x = annotation, y = track, fill = l2fold)) + 
+        geom_tile() + 
+        geom_text(aes(label = label), size = 6/.pt, color = "grey15") + 
+        scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1], 
+                             mid = brewer.pal(11, "RdYlGn")[6], 
+                             low = brewer.pal(11, "RdYlGn")[9], midpoint = 0) + 
+      toolkit_tyj$theme_my + 
+      xlab("CRE") + ylab("Transposon super family") + 
+      guides(fill = guide_colorbar(title = expression(log[2](Fold)))) + 
+      theme(legend.key.width = unit(0.4, units = "cm"), 
+            legend.margin = margin(-1, -1, -1, -6), 
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+      scale_x_discrete(labels = function(x){str_replace_all(x, "_", "\n")})
+    
+    # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_vs_CREWhole_20220425",
+    #                      width = 8, height = 8, units = "cm")
+    
+    # table
+    table(df$annotation)
+    tmp <- df %>%
+      dplyr::filter(str_detect(annotation, "(Enhancer_|Random)"), TE_lev != "Family20copies") %>%
+      pivot_wider(id_cols = track, names_from = annotation, values_from = label)
+    # fwrite(tmp, file = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_superFamily_vs_CREWhole_20220425.csv")
+  
+
+  ## all TEs + TE families (> 20 copy).
+    # subset top TE families enriched in enhancers
+    tmp <- df %>%
+      dplyr::filter(str_detect(annotation, "(Enhancer_|Random)"), TE_lev != "superFamily",
+                    annotation == "Enhancer_STARRseq", SigLabel != "ns")
+    
+    # plot
+    df %>%
+      dplyr::filter(str_detect(annotation, "(Enhancer_|Random)"), TE_lev != "superFamily",
+                    track %in% tmp$track) %>%
+      dplyr::mutate(annotation = factor(annotation, levels = toolkit_tyj$AtEn_level),
+                    Transposon_Family = str_replace_all(track, "(.+) \\(.+", "\\1")) %>%
+      left_join(., te_info) %>%
+      dplyr::mutate(Transposon_Super_Family = ifelse(is.na(Transposon_Super_Family), "All TEs", Transposon_Super_Family)) %>%
+      # count(Transposon_Super_Family)
+      ggplot(aes(x = annotation, y = track, fill = l2fold)) + 
+        geom_tile() + 
+        geom_text(aes(label = label), size = 5/.pt, color = "grey15") + 
+        scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1], 
+                             mid = brewer.pal(11, "RdYlGn")[6], 
+                             low = brewer.pal(11, "RdYlGn")[9], midpoint = 0) + 
+        toolkit_tyj$theme_my + 
+        xlab("CRE") + ylab("Transposon super family") + 
+        guides(fill = guide_colorbar(title = expression(log[2](Fold)))) + 
+        theme(legend.key.width = unit(0.4, units = "cm"), 
+              legend.margin = margin(-1, -1, -1, -6), 
+              axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+              strip.text.y = element_text(angle = 0),
+              panel.spacing = unit(0.05, "cm")) + 
+        scale_x_discrete(labels = function(x){str_replace_all(x, "_", "\n")}) + 
+        facet_grid(Transposon_Super_Family ~ ., scales = "free", space = "free") +
+        labs(caption = "Only TF families significantly enriched or depleted \nin Enhancer_STARRseq were illustrated.")
+    
+    # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_family_vs_CREWhole_20220425",
+    #                      width = 9, height = 16, units = "cm")
+    
+    # table
+    table(df$annotation)
+    tmp <- df %>%
+      dplyr::filter(str_detect(annotation, "(Enhancer_|Random)"), TE_lev != "superFamily") %>%
+      pivot_wider(id_cols = track, names_from = annotation, values_from = label) %>%
+      dplyr::mutate(Transposon_Family = str_replace_all(track, "(.+) \\(.+", "\\1")) %>%
+      left_join(., te_info)
+    # fwrite(tmp, file = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_Family_vs_CREWhole_20220425.csv")
+    
+```
+
+## . Heatmap (subgroups)
+```{r}
+## each cluster of enahancer_STARRseq-----------------
+  table(df$annotation, df$TE_lev)
+  
+  ## all TEs + TE super family.
+    # plot
+    df %>%
+      dplyr::filter(str_detect(annotation, "(Zhu|Wang|Meng)", negate = T), 
+                    TE_lev != "Family20copies") %>%
+      dplyr::mutate(annotation = str_replace_all(annotation, 
+                                                 c("ActivityCluster" = "Act",
+                                                   "_enhancer" = "",
+                                                   "KmeansCluster" = "C")),
+                    Type_CRE = "All",
+                    Type_CRE = ifelse(str_detect(annotation, "Act"), "Activity group", Type_CRE),
+                    Type_CRE = ifelse(str_detect(annotation, "^C\\d"), "Kmeans group", Type_CRE),
+                    Type_CRE = ifelse(str_detect(annotation, "Clustered|Dispersed"), "Clustered/Dispersed", Type_CRE),
+                    Type_CRE = factor(Type_CRE, levels = c("All", "Activity group", "Kmeans group", "Clustered/Dispersed")),
+                    # label = ifelse(SigLabel != "ns", label, "-")
+                    ) %>%
+      ggplot(aes(x = annotation, y = track, fill = l2fold)) + 
+        geom_tile() + 
+        geom_text(aes(label = label), size = 5/.pt, color = "grey15") + 
+        scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1], 
+                             mid = brewer.pal(11, "RdYlGn")[6], 
+                             low = brewer.pal(11, "RdYlGn")[9], midpoint = 0) + 
+      toolkit_tyj$theme_my + 
+      xlab("CRE") + ylab("Transposon super family") + 
+      guides(fill = guide_colorbar(title = expression(log[2](Fold)))) + 
+      theme(legend.key.width = unit(0.4, units = "cm"), 
+            legend.margin = margin(-1, -1, -1, -6), 
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            panel.spacing = unit(0.1, "cm")) + 
+      scale_x_discrete(labels = function(x){str_replace_all(x, "_", "\n")}) + 
+      facet_grid(. ~ Type_CRE, space = "free", scales = "free")
+    
+    # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_SuperFamily_vs_CRE_cluster_20220425",
+    #                      width = 16, height = 8, units = "cm")
+    
+    # table
+    table(df$annotation)
+    tmp <- df %>%
+      dplyr::filter(str_detect(annotation, "(Zhu|Wang|Meng)", negate = T), 
+                    TE_lev != "Family20copies") %>%
+      pivot_wider(id_cols = track, names_from = annotation, values_from = label)
+    fwrite(tmp, file = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_superFamily_vs_CRE_cluster_20220425.csv")
+        
+        
+  ## all TEs + TE families (> 20 copy).
+    # subset TE families enriched in enhancer_STARRseq
+    tmp <- df %>%
+      dplyr::filter(str_detect(annotation, "(Enhancer_|Random)"), TE_lev != "superFamily",
+                    annotation == "Enhancer_STARRseq", SigLabel != "ns")
+    
+    # plot
+    df %>%
+      dplyr::filter(str_detect(annotation, "(Zhu|Wang|Meng)", negate = T), 
+                    TE_lev != "superFamily",
+                    track %in% tmp$track) %>%
+      dplyr::mutate(annotation = str_replace_all(annotation, 
+                                                 c("ActivityCluster" = "Act",
+                                                   "_enhancer" = "",
+                                                   "KmeansCluster" = "C")),
+                    Type_CRE = "All",
+                    Type_CRE = ifelse(str_detect(annotation, "Act"), "Activity group", Type_CRE),
+                    Type_CRE = ifelse(str_detect(annotation, "^C\\d"), "Kmeans group", Type_CRE),
+                    Type_CRE = ifelse(str_detect(annotation, "Clustered|Dispersed"), "Clustered/Dispersed", Type_CRE),
+                    Type_CRE = factor(Type_CRE, levels = c("All", "Activity group", "Kmeans group", "Clustered/Dispersed")),
+                    # label = ifelse(SigLabel != "ns", label, "-") %>%
+                    Transposon_Family = str_replace_all(track, "(.+) \\(.+", "\\1")
+                    ) %>%
+      left_join(., te_info) %>%
+      dplyr::mutate(Transposon_Super_Family = ifelse(is.na(Transposon_Super_Family), "All TEs", Transposon_Super_Family)) %>% 
+      ggplot(aes(x = annotation, y = track, fill = l2fold)) + 
+        geom_tile() + 
+        geom_text(aes(label = label), size = 5/.pt, color = "grey15") + 
+        scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1], 
+                             mid = brewer.pal(11, "RdYlGn")[6], 
+                             low = brewer.pal(11, "RdYlGn")[9], midpoint = 0) + 
+      toolkit_tyj$theme_my + 
+      xlab("CRE") + ylab("Transposon super family") + 
+      guides(fill = guide_colorbar(title = expression(log[2](Fold)))) + 
+      theme(legend.key.width = unit(0.4, units = "cm"), 
+            legend.margin = margin(-1, -1, -1, -6), 
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            panel.spacing = unit(0.1, "cm"),
+            strip.text.y = element_text(angle = 0)) + 
+      scale_x_discrete(labels = function(x){str_replace_all(x, "_", "\n")}) + 
+      facet_grid( Transposon_Super_Family ~ Type_CRE, space = "free", scales = "free")
+    
+    toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_Family_vs_CRE_cluster_20220425",
+                         width = 17.5, height = 16, units = "cm")
+    
+    # table
+    table(df$annotation)
+    tmp <- df %>%
+      dplyr::filter(str_detect(annotation, "(Zhu|Wang|Meng)", negate = T), TE_lev != "superFamily") %>%
+      pivot_wider(id_cols = track, names_from = annotation, values_from = label) %>%
+      dplyr::mutate(Transposon_Family = str_replace_all(track, "(.+) \\(.+", "\\1")) %>%
+      left_join(., te_info)
+    fwrite(tmp, file = "./R4.Distribution_of_enhancers/TEs/GAT_results_TE_Family_vs_CRE_cluster_20220425.csv")
+    
+```
+
+
+# Clustered enhancer
+
+## .1 identification
+```{r}
+rm(list = ls())
+source("D:/SUST/code/TanYongjun_code.R")
+## load CREs 
+  enhancer <- fread("Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_TE_20210510.csv.gz") %>%
+    dplyr::filter(!(str_detect(method, "STARR", negate = F) & enrichment <= 1.3)) %>%
+    dplyr::mutate(V4 = str_replace_all(ClusterActivity, "Part", "Act"),
+                  KmeansCluster = str_c("C", clusterK4))
+  df <- enhancer %>% 
+    dplyr::filter(method == "cSTARR-seq")
+    
+## define clustered enhancer with distance less than 600
+  MaxDist <- 600 # between border of two adjacent enhancers.
+  NumIndividualEnhancer <- 4
+  
+  # clustered enhancers (Number of individual enhancers >1)
+  dfGR_reduce <- df %>% 
+    makeGRangesFromDataFrame() %>%
+    GenomicRanges::resize(width = (600 + MaxDist), fix = "center") %>%
+    GenomicRanges::reduce()
+  ol <- findOverlaps(makeGRangesFromDataFrame(df), dfGR_reduce)
+  superEn <- dfGR_reduce[width(dfGR_reduce) > (600 + MaxDist)] %>%
+    as.data.frame() %>%
+    dplyr::mutate(seqnames = as.character(seqnames))
+
+ # filtration based on number of individual enhancers in SuperEnhancer.
+  ol1 <- findOverlaps(makeGRangesFromDataFrame(superEn), 
+                      makeGRangesFromDataFrame(df))
+  NumIndEnCount <- ol1@from %>%
+    table() %>%
+    as.data.frame()
+  superEn$NumIndEn <- NA
+  superEn$NumIndEn[NumIndEnCount[,1]] <- NumIndEnCount[,2]
+  superEn <- superEn %>%
+    dplyr::filter(NumIndEn >= NumIndividualEnhancer)
+  
+  # Number of enhancers in SuperEnhancer
+  p <- superEn %>%
+    ggplot(aes(x = NumIndEn)) + 
+      geom_histogram() + 
+      theme() + 
+      toolkit_tyj$theme_my + 
+      ggtitle("Number of enhancers in each SuperEnhancer") + 
+      xlab("Number of enhancers") + 
+      labs(caption = str_c("Max distance between center of two adjacent enhancers:", MaxDist, 
+                           "bp\nMin number of enhancers in one superenhancer:", NumIndividualEnhancer))
+  p
+  # toolkit_tyj$SavePlot(filename_prefix = paste("./R4.Distribution_of_enhancers/SuperEnhancer/Number_of_enhancers_in_SuperEnhancer_MaxDist_",
+  #                                              MaxDist, "bp_Number_", NumIndividualEnhancer, sep = ""),
+  #                      width = 8, height = 6)
+  
+
+  # resize super enhancer (because width of each individual enhancer were changed in SE identification.)
+  superEn <- superEn %>%
+    dplyr::mutate(start = start + MaxDist / 2, 
+                  end = end - MaxDist /2)
+  
+  # superEn %>%
+  #   dplyr::mutate(seqnames =str_c("chr", seqnames, sep = "")) %>%
+  #   fwrite(file = paste("./R4.Distribution_of_enhancers/SuperEnhancer/List_of_SuperEnhancer",
+  #                       MaxDist, "bp_Number_", NumIndividualEnhancer, 
+  #                       ".bed", sep = ""), 
+  #          col.names = F, row.names = F, sep = "\t")
+  
+  # df %>%
+  #   dplyr::select(1:3) %>%
+  #   fwrite(file = "./R4.Distribution_of_enhancers/SuperEnhancer/Enhancer_STARRseq_1.3.bed", 
+  #          row.names = F, col.names = F, sep = "\t")
+  
+  
+# add info
+  df$ClusterType <- "Individual"
+  superEnGR <- makeGRangesFromDataFrame(superEn)
+  dfGR <- makeGRangesFromDataFrame(df)
+  ol2 <- findOverlaps(dfGR, superEnGR, minoverlap = 1)
+  df$ClusterType[ol2@from] <- "Clustered"
+  table(df$ClusterType)
+  sum(superEn$NumIndEn)
+  # fwrite(df, "Enhancers_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_TE_SuperEn_20210513.csv.gz")
+  
+```
+
+## .2 properties
+
+### . Distribution, length
+```{r}
+## Properties of SuperEnhancer
+  # genome distribution of super enhancer
+  centromereAt <- fread("./refgenome/TAIR9_GFF3_assemblies.gff", skip = 1, header = F) %>%
+    dplyr::filter(str_detect(V9, "CEN")) %>%
+    dplyr::group_by(V1) %>%
+    summarise(start = mean(V4) / 1e6, 
+              end = mean(V5) / 1e6) %>%
+    dplyr::mutate(V1 = as.numeric(str_replace_all(V1, "Chr", "")), 
+                  width = end - start)
+  
+  library(TxDb.Athaliana.BioMart.plantsmart28)
+  chr_info <- data.frame(x = names(seqlengths(TxDb.Athaliana.BioMart.plantsmart28)), 
+                         length = seqlengths(TxDb.Athaliana.BioMart.plantsmart28) / 1e6)
+  p <- ggplot(data = superEn) + 
+    geom_col(data = chr_info, aes(x = x, y = length), fill = "grey75", 
+             width = 0.1) +
+    # geom_vline(aes(xintercept = seqnames),  linetype  = 2, color = "grey45") +
+    geom_tile(aes(x = V1, y = (start + end) / 2, width = 0.13, height = 0.5), 
+              data = centromereAt, fill = "grey40") +
+    # geom_tile(aes(x = seqnames, y = (start + end) / 2e6, height = width / 3000, 
+    #               width = 0.1), 
+    #           alpha = 1/2, color = "black") +
+    geom_point(aes(x = seqnames, y = (start + end) / 2e6), 
+          alpha = 2/3, color = "steelblue", shape = "-", size = 6) +
+    toolkit_tyj$theme_my + 
+    scale_y_reverse() + 
+    xlab("Chromosome") +
+    ggtitle("Position of Supencer Enhancers") + 
+    labs(caption = str_c("Max distance between center of two adjacent enhancers:", MaxDist, 
+                         "bp\nMin number of enhancers in one superenhancer:", NumIndividualEnhancer))
+  p
+  # toolkit_tyj$SavePlot(filename_prefix = paste("./R4.Distribution_of_enhancers/SuperEnhancer/Distribution_of_Clustered_enhancer_",
+  #                                              MaxDist, "bp_Number_", NumIndividualEnhancer, sep = ""),
+  #                      width = 12, height = 8, plot = p)
+
+  # Width of super enhancer
+  p <- superEn %>%
+    dplyr::mutate(bins = cut(width, breaks = c(seq(3000, 6000, by = 500), "Inf"))) %>%
+    group_by(bins) %>%
+    summarise(Num = n()) %>%
+    ggplot(aes(x = bins, y = Num)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+      xlab("Width of clustered Enhancers") + 
+      ylab("Number") + 
+      ggtitle("Width of clustered enhancer")
+  p
+  
+  # toolkit_tyj$SavePlot(filename_prefix = paste("./R4.Distribution_of_enhancers/SuperEnhancer/Width_of_Clustered_enhancer_",
+  #                                              MaxDist, "bp_Number_", NumIndividualEnhancer, sep = ""),
+  #                      width = 8, height = 6, plot = p)
+  
+```
+
+### . Number/percentage
+
+```{r}
+  df %>%
+    dplyr::filter(seqnames != "Mt") %>%
+    dplyr::group_by(ClusterType) %>%
+    dplyr::count() %>%
+    ungroup() %>%
+    dplyr::mutate(Rate = n / sum(n),
+                  ClusterType = factor(ClusterType, levels = c("Individual", "Clustered")),
+                  label = str_c(ClusterType, "\nn=", n, "\n", percent(Rate, accuracy = 0.01))) %>%
+    ggplot(aes(y = Rate, x = 1, fill = ClusterType)) + 
+      geom_col(alpha = 4/5) + 
+      toolkit_tyj$theme_my + 
+      coord_polar(theta = "y") +
+      # coord_flip() +
+      geom_text(aes(y = Rate/2, label = label),
+                size = 6/.pt) +
+      scale_fill_manual(values = rev(toolkit_tyj$AtEn_CluDis_color)) + 
+      scale_y_continuous(labels = scales::percent) +
+      theme(axis.text = element_blank(),
+            axis.title = element_blank(), 
+            axis.ticks = element_blank(),
+            legend.position = "none", panel.border = element_blank())
+
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/SuperEnhancer/Percentage_clustered_dispersed_enhancer_20220521",
+                       width = 3.5, height = 3.5)
+```
+
+
+### . Epigenetic score
+```{r}
+  ## add additional chromatin states.
+  cre_score <- fread("./R5.chromatin_states/CRE_score_matrix/Chromatin_score_matrix_all_CRE_resized100bp_20210416.csv.gz") %>%
+    dplyr::filter(method == "cSTARR-seq") %>%
+    unique() %>%
+    makeGRangesFromDataFrame(keep.extra.columns = T) %>%
+    resize(width = 600, fix = "center") %>%
+    as.data.frame() %>%
+    dplyr::select(-width, -strand) %>%
+    pivot_wider(id_cols = c(seqnames, start, end, method), names_from = "chrState", values_from = "score") %>%
+    dplyr::mutate(seqnames = str_replace_all(seqnames, "chr", ""))
+    
+  
+  dfNew <- df %>%
+    dplyr::select(seqnames:endBK, Dim.1:ClusterType) %>%
+    left_join(., cre_score)
+  dfNew <- dfNew %>%
+    dplyr::select(seqnames:endBK, ATACseq:RNAPOII, H2AW:H4K16ac, Dim.1:ClusterType)
+  
+  # plot
+  library(ggsignif)
+
+  p <- dfNew %>% 
+    dplyr::select(ClusterType, enrichment, ATACseq:H4K16ac) %>%
+    pivot_longer(cols = enrichment:H4K16ac) %>%
+    dplyr::filter(str_detect(name, "ATAC|enrichment|FAIRE", negate = T)) %>%
+    dplyr::mutate(name = factor(str_replace_all(name, c("H2A" = "H2A.",
+                                                        "^H2A.$" = "H2A")),
+                                levels = str_replace_all(toolkit_tyj$AtEpi_order, 
+                                                         c("H2A" = "H2A.",
+                                                          "^H2A.$" = "H2A")))) %>%
+    ggplot(aes(x = ClusterType, y = value, color = ClusterType)) + 
+      geom_boxplot(fill = "transparent", outlier.alpha = 0, width = 0.2) +
+      geom_violin(fill = "transparent") + 
+      facet_wrap("name", scales = "free_y", ncol = 5) + 
+      theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1), 
+            legend.position = "none") + 
+      toolkit_tyj$theme_my +
+      scale_color_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      scale_y_log10(expand = expansion(mult = c(0.1, 0.28))) + 
+      geom_signif(comparisons = list(c("Clustered", "Dispersed")), 
+                  color = "grey30", vjust = -0.3, test = "wilcox.test", size = 0.2,
+                  textsize = 6/.pt)  + 
+      # labs(caption = str_c("Max distance between boundaries of two adjacent enhancers:", MaxDist, 
+      #                      "bp\nMin number of enhancers in one superenhancer:", NumIndividualEnhancer)) +
+      xlab("Type") + 
+      ylab("Score")
+  p
+  
+  # toolkit_tyj$SavePlot(filename_prefix = paste("./R4.Distribution_of_enhancers/SuperEnhancer/Chrstates_cluster_vs_dispersed_enhancers_",
+  #                                              MaxDist, "bp_Number_", NumIndividualEnhancer, sep = ""),
+  #                      width = 12, height = 10, plot = p)
+```
+
+
+
+### . Cluster
+ 
+ 
+```{r}
+  # Number of Clustered/Dispersed enhancers in different ActivityCluster
+  p <- table(df$ClusterType, df$V4) %>%
+    as.data.frame() %>%
+    ggplot(aes(x = Var1, y = Freq, fill = Var1)) + 
+      geom_col(alpha = 2/3) + 
+      facet_grid(. ~ Var2) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            legend.position = "none", 
+            axis.title.x = element_blank()) + 
+      ylab("Number") +
+      # ggtitle("Number of two kind of enhancers in five ActivityClusters") + 
+      # labs(caption = str_c("Max distance between boundaries of two adjacent enhancers:", MaxDist, 
+      #                      "bp\nMin number of enhancers in one superenhancer:", NumIndividualEnhancer)) + 
+      toolkit_tyj$theme_my
+  p
+  
+  toolkit_tyj$SavePlot(paste("./R4.Distribution_of_enhancers/SuperEnhancer/Number_of_Clustered_Dispersed_enhancer_vs_ActivityCluster_",
+                             MaxDist, "bp_Number_", NumIndividualEnhancer, sep = ""),
+                       width = 6, height = 5.5, plot = p)
+  
+  # Number of Clustered/Dispersed enhancers in different KmeansCluster
+  p <- table(df$ClusterType, df$KmeansCluster) %>%
+    as.data.frame() %>%
+    dplyr::filter(Var2 != "C0") %>%
+    ggplot(aes(x = Var1, y = Freq, fill = Var1)) + 
+      geom_col(alpha = 2/3) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      facet_grid(. ~ Var2) + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            legend.position = "none", 
+            axis.title.x = element_blank()) + 
+      # ggtitle("Number of two kind of enhancers in KmeansClusters") + 
+      # labs(caption = str_c("Max distance between boundaries of two adjacent enhancers:", MaxDist, 
+      #                      "bp\nMin number of enhancers in one superenhancer:", NumIndividualEnhancer))+ 
+      geom_text(aes(x = Var1, y = ifelse(Freq > 100, Freq/2, Freq + 50), label = Freq),
+                size = 6/.pt) +
+      ylab("Number") +
+      toolkit_tyj$theme_my
+  p
+  
+  toolkit_tyj$SavePlot(paste("./R4.Distribution_of_enhancers/SuperEnhancer/Number_of_Clustered_Dispersed_enhancer_vs_KmeansCluster_K4_",
+                             MaxDist, "bp_Number_", NumIndividualEnhancer, sep = ""),
+                       width = 5, height = 5.5, plot = p)
+  
+  # Number of Clustered/Dispersed enhancers in different KmeansCluster
+  tmp <- df %>%
+    dplyr::filter(seqnames != "Mt") 
+  
+  p <- table(tmp$ClusterType, tmp$KmeansCluster) %>%
+    as.data.frame() %>%
+    dplyr::filter(Var2 != "C0") %>%
+    ggplot(aes(x = Var2, y = Freq, fill = Var1)) + 
+      geom_col(alpha = 2/3) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      facet_grid(. ~ Var1) + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            legend.position = "none", 
+            axis.title.x = element_blank()) + 
+      # ggtitle("Number of two kind of enhancers in KmeansClusters") + 
+      # labs(caption = str_c("Max distance between boundaries of two adjacent enhancers:", MaxDist, 
+      #                      "bp\nMin number of enhancers in one superenhancer:", NumIndividualEnhancer))+ 
+      geom_text(aes(x = Var2, y = Freq, label = Freq),
+                size = 6/.pt, nudge_y = 70) +
+      ylab("Number") +
+      toolkit_tyj$theme_my
+  p
+  
+  toolkit_tyj$SavePlot(paste("./R4.Distribution_of_enhancers/SuperEnhancer/Number_of_Clustered_Dispersed_enhancer_vs_KmeansCluster_K4_Shape2_",
+                             MaxDist, "bp_Number_", NumIndividualEnhancer, sep = ""),
+                       width = 5, height = 5.5, plot = p)
+```
+
+
+### . TEs
+Results illustrated in this part was calculated based on overlap (center of TE in enhancer or center of enhancer in TE).
+20210513
+```{r}
+## overlap with TEs?
+  tmp <- df %>%
+  dplyr::filter(seqnames != "Mt") %>%
+    dplyr::mutate(TE_SuperFamily = ifelse(str_length(TE_SuperFamily) > 1, 
+                                             "withTE", "nonTE")) %>%
+    dplyr::group_by(TE_SuperFamily, ClusterType) %>%
+    summarise(Num = n()) %>%
+    pivot_wider(names_from = TE_SuperFamily, values_from = Num)
+  
+  # fwrite(tmp, file = "./R4.Distribution_of_enhancers/SuperEnhancer/Num_SuperEnhancer_ol_TEs_contingency_table_20210513.csv")
+  # write.table(paste("The p value of fisher's exact test was ", fisher.test(tmp[,2:3])$p.val, sep = ""), 
+  #        file = "./R4.Distribution_of_enhancers/SuperEnhancer/Num_SuperEnhancer_ol_TEs_contingency_table_20210513.csv", 
+  #        append = T, row.names = F, col.names = F)
+  
+  # plot
+  p <- tmp %>%
+    dplyr::mutate(Total = nonTE + withTE,
+                  Rate = withTE / Total, 
+                  label = str_c(percent(Rate, accuracy = 0.01), "\n(", withTE, "/", Total, ")")) %>%
+    ggplot(aes(x = ClusterType, y = Rate, fill = ClusterType)) + 
+      geom_col(alpha = 2/3) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      geom_text(aes(x = ClusterType, y = Rate / 2, label = label), size = 6/.pt) + 
+      geom_signif(annotations = paste("Fisher's exact test\np=",
+                                      formatC(fisher.test(tmp[,2:3])$p.val, digits = 1), sep = ""), 
+                  xmin = 1, xmax = 2,
+                  y_position = 0.89, textsize = 6/.pt, size = 0.2) + 
+      toolkit_tyj$theme_my + 
+      theme(legend.position = "none", axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+      coord_cartesian(ylim = c(0, 1)) + 
+      ylab("Percentage of enhancers overlapping with TEs") +
+      scale_y_continuous(labels = scales::percent)
+  p
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/SuperEnhancer/Percent_of_clustered_dispersed_enhancer_ol_TEs_FisherExacttest",
+                       width = 3.5, height = 5.5, plot = p)
+    
+# Percent of clustered/dispersed enhancers in enhancer groups based on TE family.------------
+  tmp <- df %>%
+    dplyr::mutate(TE_SuperFamily = ifelse(str_length(TE_SuperFamily) > 1, 
+                                             TE_SuperFamily, "nonTE")) %>%
+    dplyr::group_by(TE_SuperFamily, ClusterType) %>%
+    summarise(Num = n()) %>%
+    pivot_wider(names_from = ClusterType, values_from = Num, values_fill = 0) %>%
+    dplyr::mutate(Total = Clustered + Individual) %>%
+    pivot_longer(cols = Clustered:Individual, names_to = "Type", values_to = "Value") %>%
+    dplyr::mutate(Rate = Value / Total) 
+  
+  order_tmp <- tmp %>%
+    dplyr::filter(Type == "Clustered") %>%
+    arrange(desc(Rate)) %>%
+    dplyr::select(TE_SuperFamily) %>%
+    unlist()
+  order_tmp <- c("nonTE", order_tmp[str_detect(order_tmp, "nonTE", negate = T)])
+  
+# bar plot (Percent, Clustered + Individual)--------------------
+  tmp <- tmp %>%
+    dplyr::mutate(TE_SuperFamily = factor(TE_SuperFamily, levels = order_tmp), 
+                  label = str_c(percent(Rate, accuracy = 0.01), " (", Value, "/", Total, ")", sep = ""),
+                  xlab = str_c(TE_SuperFamily, "\n(", Total, ")")) %>%
+    arrange(TE_SuperFamily)
+  tmp %>%
+    
+    ggplot(aes(x = TE_SuperFamily, y = Rate, fill = Type)) + 
+      geom_col(alpha = 2/3) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      # geom_text(aes(label = label, y = TE_SuperFamily, x = 0.5), 
+      #           data = dplyr::filter(tmp, Type == "Clustered"), 
+      #           color = "grey10", size = 6/.pt) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            legend.position = "bottom", 
+            axis.title.x = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(-10, 0, 0, -10)) + 
+      # ggtitle("Percent of clustered and dispersed enhancers in each enhancer group") + 
+      toolkit_tyj$theme_my + 
+      scale_y_continuous(labels = scales::percent) +
+      scale_x_discrete(labels = unique(tmp$xlab))
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/SuperEnhancer/SuperEnhancer_ol_TEs_Rate_20210513",
+  #                      width = 9, height = 6.25)
+  
+# bar plot (Percent, Clustered)----------------
+  tmp1 <- tmp %>%
+    dplyr::mutate(TE_SuperFamily = factor(TE_SuperFamily, levels = order_tmp), 
+                  label = str_c(percent(Rate, accuracy = 0.01), " (", Value, "/", Total, ")", sep = ""),
+                  xlab = str_c(TE_SuperFamily, "\n(", Total, ")")) %>%
+    arrange(TE_SuperFamily) %>%
+    dplyr::filter(Type == "Clustered")
+  
+  tmp1 %>%
+    ggplot(aes(x = TE_SuperFamily, y = Rate, fill = Type)) + 
+      geom_col(alpha = 2/3) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      # geom_text(aes(label = label, y = TE_SuperFamily, x = 0.5), 
+      #           data = dplyr::filter(tmp, Type == "Clustered"), 
+      #           color = "grey10", size = 6/.pt) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            legend.position = "none", 
+            axis.title.x = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(-10, 0, 0, -10)) + 
+      # ggtitle("Percent of clustered and dispersed enhancers in each enhancer group") + 
+      toolkit_tyj$theme_my + 
+      ylab("Percentage of Ts overlapping with Clustered enhancers") +
+      scale_y_continuous(labels = scales::percent, expand = expansion(add = c(0, 0.1))) +
+      scale_x_discrete(labels = unique(tmp$xlab)) + 
+      geom_text(aes(label = scales::percent(Rate, accuracy = 0.01, y = Rate)),
+                size = 6/.pt, nudge_y = 0.08, angle = 45)
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/SuperEnhancer/SuperEnhancer_ol_TEs_Rate_Only_Clusterd_20210513",
+                       width = 9, height = 6)
+  
+# bar plot (Number)---------------
+  tmp <- tmp %>%
+    dplyr::mutate(TextPos = Total + 300) %>%
+    dplyr::mutate(TextPos = ifelse(TextPos > 2500, 2500, TextPos),
+                  xlab = str_c(TE_SuperFamily, "\n(", Total, ")"))
+  tmp %>%
+    ggplot(aes(y = TE_SuperFamily, x = Value, fill = Type)) + 
+      geom_col(alpha = 4/5) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_CluDis_color) +
+      geom_text(aes(label = label, y = TE_SuperFamily, x = TextPos), 
+                data = dplyr::filter(tmp, Type == "Clustered_enhancer"), 
+                color = "grey10", size = 2) +
+      toolkit_tyj$theme_my + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            legend.position = "bottom", 
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.margin = margin(-10, 0, 0, 0)) + 
+      xlab("Number of enhancers") +
+      ggtitle("Number of clustered and dispersed enhancers\nin each enhancer group")
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/SuperEnhancer/SuperEnhancer_ol_TEs_Number_20210513",
+  #                      width = 7, height = 8)
+  
+# Percent of Clustered and dispersed enhancer overlaped with TE superfamily and family (In Part 4.7 TEs).
+
+  
+```
+
+
+
+

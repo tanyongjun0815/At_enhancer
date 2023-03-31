@@ -1,0 +1,1314 @@
+---
+title: "Fig3&S3"
+author: "TYJ"
+date: '2022-05-17'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, background="transparent", fig.align='center' }
+knitr::opts_chunk$set(echo = F, include = T, highlight = T, warning = F, fig.align = "c")
+options(knitr.kable.NA = '')
+library(pheatmap)
+library(grid)
+library(data.table)
+library(GenomicRanges)
+library(tidyverse)
+source("D:/SUST/code/TanYongjun_code.R")
+```
+
+# collect GAT results and adjust pvalue
+
+```{r}
+  rm(list=ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+# table of DAPseq peaks meta info
+  FileLs <- fread("./refgenome/GSE60143_RAW_DAPSeq/meta_info_byTYJ_20210324.tsv") %>%
+    mutate(track = paste(Family, "_", Protein, "_", Methy, ".tsv", sep = ""))
+  
+# results  of GAT.
+  r1 <- fread("./R7.TFs/All_GAT_100000_results_20210616.csv.gz") %>%
+    dplyr::mutate(Data = "20210616") 
+  r2 <- fread("./R7.TFs/All_GAT_100000_results_20210617.csv.gz") %>%
+    dplyr::mutate(Data = "20210617")
+  r3 <- fread("./R7.TFs/All_GAT_100000_results_20210630.csv.gz") %>%
+    dplyr::mutate(Data = "20210630")
+  r4 <- fread("./R7.TFs/All_GAT_100000_results_20210702.csv.gz") %>%
+    dplyr::mutate(Data = "20210702")
+  r5 <- fread("./R7.TFs/All_GAT_100000_results_20220517.csv.gz") %>%
+    dplyr::mutate(Data = "20220517")
+  results_all <- rbind(r1, r2, r3, r4, r5) %>%
+    as.data.frame() %>%
+    dplyr::mutate(track = str_replace_all(track, "_add", ""))
+  rm(r1, r2, r3, r4, r5)
+  
+  # match(results_all$track, FileLs$track)
+  results_all <- right_join(FileLs, results_all)
+  unique(results_all$annotation)
+  table(results_all$annotation, results_all$Data)
+
+## summary of CREs
+  CREsAll <- fread("./R7.TFs/bed_files/at_CREs_all_20210517.bed.gz") %>%
+    rbind(., fread("./R7.TFs/bed_files/Enhancers_Meng2021_20210630.bed.gz")) %>%
+    rbind(., fread("./R7.TFs/bed_files/at_CREs_enhancer_located_xxbp_from_CorePro.bed.gz")) %>%
+    rbind(., fread("./R7.TFs/bed_files/Enhancer_TSHK_gene_up500_down500_20220517.bed.gz"))
+  table(CREsAll$V4)
+  CREs_summary <- CREsAll %>%
+    dplyr::mutate(width = V3 - V2) %>%
+    group_by(V4) %>%
+    dplyr::summarise(MedianWidth = median(width), NumRegions = n()) %>%
+    dplyr::rename(annotation = V4)
+
+# rename CRE/CRE clusters
+  unique(results_all$annotation) %>% sort()
+  unique(CREsAll$V4) %>% sort()
+  results_all$annotation <- str_replace_all(results_all$annotation, 
+                                            c("^Enhancer$" = "Enhancer_STARRseq"))
+  
+# adjust pvalue
+  results_sig <- results_all %>%
+    group_by(annotation) %>%
+    mutate(Num = length(pvalue), 
+           padj_BH = p.adjust(pvalue, method = "BH")) %>%
+    mutate(padj_BH_lab = toolkit_tyj$returnAsterisk(padj_BH)) %>%
+    # dplyr::filter(abs(l2fold) > 1) %>%
+    mutate(fold_type = ifelse(fold > 1, "Enriched", "Depleted")) %>%
+    mutate(Type = str_c(fold_type, padj_BH_lab, sep = " ")) %>%
+    mutate(Type = str_replace_all(Type, ".+ns", "ns"))
+
+  # fwrite(results_sig, file = "./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz")
+  
+```
+
+# Table Sx: GAT results
+Formated GAT results for supplemental table.
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz")
+  dep_ls <- fread("./refgenome/GSE60143_RAW_DAPSeq/meta_info_byTYJ_20210324.tsv")
+  table(dep_ls$Family, dep_ls$Methy)
+  table(dep_ls$Methy)
+  
+  table(results_sig$annotation)
+  tmp <- results_sig %>%
+    dplyr::filter(str_detect(annotation, "ActivityCluster|Kmeans|HKCorePro|TSCorePro|sCorePro|^sEnhancer$|Enhancer_")) %>%
+    dplyr::mutate(annotation = str_replace_all(annotation, c("ActivityCluster" = "Act", 
+                                "KmeansCluster" = "C",
+                                "HKCorePro" = "Promoter_House-keeping",
+                                "TSCorePro" = "Promoter_Tissue-specific",
+                                "sEnhancer" = "sEnhancer_STARRseq",
+                                "sCorePro" = "sPromoter"))) %>%
+    dplyr::select(-c(file, DAPSeq, Methy)) %>%
+    dplyr::mutate(across(.cols = matches("percent"), .fns = function(x){x/100}))
+  unique(tmp$annotation) %>%sort()
+  head(tmp)
+  
+  # tmp %>%
+    # fwrite("./R7.TFs/GAT_results_for_Supp_Table.csv")
+  
+```
+
+# Summary of TFs enriched/depleted
+
+## Count TFs per family
+Generate two tables which contain the number or percent of TF family members enriched or depleted in each CRE or CRE.
+DAP-seq of both raw DNA (methylated) or amplified DNA (not methylated) were contained.
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz")
+  dep_ls <- fread("./refgenome/GSE60143_RAW_DAPSeq/meta_info_byTYJ_20210324.tsv")
+  table(dep_ls$Family, dep_ls$Methy)
+  table(dep_ls$Methy)
+
+## summary of CREs
+  CREsAll <- fread("./R7.TFs/bed_files/at_CREs_all_20210517.bed.gz") %>%
+    rbind(., fread("./R7.TFs/bed_files/Enhancers_Meng2021_20210630.bed.gz")) %>%
+    rbind(., fread("./R7.TFs/bed_files/at_CREs_enhancer_located_xxbp_from_CorePro.bed.gz")) %>%
+    rbind(., fread("./R7.TFs/bed_files/Enhancer_TSHK_gene_up500_down500_20220517.bed.gz")) %>%
+    dplyr::mutate(V4 = str_replace_all(V4, "^Enhancer$", "Enhancer_STARRseq"))
+  table(CREsAll$V4, CREsAll$V1)
+  CREs_summary <- CREsAll %>%
+    dplyr::mutate(width = V3 - V2) %>%
+    group_by(V4) %>%
+    dplyr::summarise(MedianWidth = median(width), NumRegions = n()) %>%
+    dplyr::rename(annotation = V4)
+  
+  setdiff(unique(results_sig$annotation), unique(CREsAll$V4))
+  setdiff(unique(CREsAll$V4), unique(results_sig$annotation))
+
+## Table of TFs enriched in CREs/CREs cluster
+  df <- results_sig %>%
+    dplyr::filter(padj_BH < 0.05) %>%
+    dplyr::mutate(tmp = str_c(round(l2fold, digits = 2), "(", format(padj_BH, scientific = T, digits = 2), ")", sep = "")) %>%
+    pivot_wider(id_cols = c(Family, Protein, Methy), names_from = annotation, values_from = tmp) %>%
+    arrange(Family, Protein, Methy)
+  # fwrite(df, "./R7.TFs/Table_of_TFs_enriched_in_CREs_cluster_20210616.csv")
+
+## Number of TFs and TFfamilys enriched in each CRE or CRE clusters.
+  dap_summary <- dep_ls %>%
+    group_by(Methy, Family) %>%
+    dplyr::count(name = "Total")
+  
+
+### Percent of enriched TFs------
+  table(dep_ls$Methy)
+  
+  # Count All TFs
+  Num_TFs <- results_sig %>%
+    dplyr::filter(padj_BH < 0.05) %>%
+    group_by(Methy, annotation, fold_type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = c(annotation, fold_type), names_from = Methy, values_from = Num, values_fill = NA) %>%
+    dplyr::mutate(Col = Col / 470, 
+                  Col_amplified = Col_amplified / 341) %>%
+    pivot_longer(cols = Col:Col_amplified, names_to = "Methy") %>%
+    pivot_wider(id_cols = fold_type:Methy, names_from = annotation, values_from = value, values_fill = 0) %>%
+    dplyr::mutate(Family = "Total") 
+  
+  # Count at each TFfamily
+  Num_Family <- results_sig %>%
+    dplyr::filter(padj_BH < 0.05) %>%
+    group_by(annotation, Methy, Family, fold_type) %>%
+    dplyr::count(name = "Num") %>%
+    left_join(., dap_summary) %>%
+    dplyr::mutate(Ratio = Num / Total) %>%
+    pivot_wider(id_cols = c(Family, Methy, fold_type), names_from = annotation, values_from = Ratio, values_fill = 0) %>%
+    arrange(Family, Methy)
+  
+  # merge and classify TFs (based on enriched in CREs or not.)
+  df <- full_join(Num_TFs, Num_Family) %>%
+    dplyr::select(ncol(.), 1:(ncol(.) - 1)) %>%
+    left_join(., dap_summary)
+  
+  # label and classify
+  df_percent <- df %>%
+    dplyr::mutate(sCorePro = ifelse(is.na(sCorePro), 0.00001, sCorePro),
+                  sEnhancer = ifelse(is.na(sEnhancer), 0.00001, sEnhancer),
+                  EPratio = sEnhancer/sCorePro,
+                  log2EPratio = log2(sEnhancer/sCorePro)) %>%
+    dplyr::mutate(VariedFamily = ifelse(abs(log2EPratio) > 1 & Total > 5, "Yes", "No"))
+    
+   # ## write
+   #  df_percent %>%
+   #    fwrite("./R7.TFs/Percent_of_Methy_unMethy_TFs_TFFamily_members_enriched_depleted_in_CREs_20210616.csv", quote = T)
+
+### Number of enriched TFs------
+  
+  # each TFs level
+  Num_TFs <- results_sig %>%
+    dplyr::filter(padj_BH < 0.05) %>%
+    group_by(Methy, annotation, fold_type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = c(annotation, fold_type), names_from = Methy, values_from = Num, values_fill = NA) %>%
+    pivot_longer(cols = Col:Col_amplified, names_to = "Methy") %>%
+    pivot_wider(id_cols = fold_type:Methy, names_from = annotation, values_from = value, values_fill = 0) %>%
+    dplyr::mutate(Family = "Total") 
+  
+  # each TFfamily level
+  Num_Family <- results_sig %>%
+    dplyr::filter(padj_BH < 0.05) %>%
+    group_by(annotation, Methy, Family, fold_type) %>%
+    dplyr::count(name = "Num") %>%
+    left_join(., dap_summary) %>%
+    dplyr::mutate(Ratio = Num / Total) %>%
+    pivot_wider(id_cols = c(Family, Methy, fold_type), names_from = annotation, values_from = Num, values_fill = 0) %>%
+    arrange(Family, Methy)
+  
+  # merge and classify TFs (based on enriched in CREs or not.)
+  df <- full_join(Num_TFs, Num_Family) %>%
+    dplyr::select(ncol(.), 1:(ncol(.) - 1)) %>%
+    left_join(., dap_summary)
+  
+   # label and classify
+  df_number <- df %>%
+    dplyr::mutate(sCorePro = ifelse(is.na(sCorePro), 0.01, sCorePro),
+                  sEnhancer = ifelse(is.na(sEnhancer), 0.01, sEnhancer),
+                  EPratio = sEnhancer/sCorePro,
+                  log2EPratio = log2(sEnhancer/sCorePro),
+                  EPdiff = round(sEnhancer - sCorePro, digits = 0)) %>%
+    dplyr::mutate(VariedFamily = ifelse(abs(log2EPratio) > 1 & Total > 5, "Yes", "No"))
+   
+   # ## write
+   # df_number %>%
+   #   fwrite("./R7.TFs/Number_of_Methy_unMethy_TFs_TFFamily_members_enriched_depleted_in_CREs_20210616.csv", quote = T)
+
+```
+
+
+*Only peaks identified by DAP-seq using raw Col DNA (methylation was removed by PCR amplification)*
+Table of percent and number of TF family members enriched/depleted in CRE or CRE groups.
+
+```{r}
+rm(list = ls())
+source("D:/SUST/code/TanYongjun_code.R")
+df <- read_csv("./R7.TFs/Number_of_Methy_Amp_TFs_TFFamily_members_enriched_depleted_in_CREs_20210616.csv") %>%
+  dplyr::filter(Methy == "Col") # discard "Col_amplified"
+
+# prepare
+FamilyOder <- df %>%
+  dplyr::select(Family, Total) %>%
+  na.omit() %>%
+  unique() %>%
+  arrange(desc(Total))
+sigVaryTFfamily <- df %>%
+  dplyr::filter(abs(log2EPratio) > 1 & Total > 5) %>%
+  arrange(desc(abs(log2EPratio))) %>%
+  dplyr::select(Family) %>%
+  unlist() %>%
+  unique()
+
+tmp <- df %>%
+  dplyr::select(matches("(^Family|fold_type|Total|CorePro|Enhancer|enhancer|Activity|GeneBody|Kmeans|First|TSS2TTS|Exon|Intron)")) %>%
+  dplyr::filter(Family != "Total") %>%
+  # dplyr::filter(Family %in% sigVaryTFfamily) %>%
+  pivot_longer(cols = matches("CorePro|Enhancer|enhancer|Activity|GeneBody|Kmeans|First|TSS2TTS|Exon|Intron"), values_to = "Num_sig") %>%
+  dplyr::mutate(Total = if_else(fold_type == "Depleted", -Total, Total), 
+                Num_sig = if_else(fold_type == "Depleted", -Num_sig, Num_sig), 
+                Family = factor(Family, levels = FamilyOder$Family), 
+                fold_type = factor(fold_type, levels = c("Enriched", "Depleted")), 
+                Num_sig = ifelse(abs(Num_sig) < 0.5, 0, Num_sig))
+
+# summary of each family level
+df %>%
+  dplyr::select(matches("(^Family|fold_type|Total|CorePro|Enhancer|enhancer|Activity|GeneBody|Kmeans|First|TSS2TTS|Exon|Intron)")) %>%
+  dplyr::mutate(Total = ifelse(is.na(Total), 470, Total)) %>%
+  dplyr::mutate(across(.cols = matches("(CorePro|Enhancer|enhancer|Activity|GeneBody|Kmeans|First|TSS2TTS|Exon|Intron)"), 
+         function(x){
+           x[is.na(x)] <- 0
+           return(paste(percent(x / .$Total, accuracy = 0.01), 
+                        "(", x, "/", .$Total, ")", sep = ""))
+         })) %T>%
+  # fwrite("./R7.TFs/Number_of_Methy_Amp_TFs_TFFamily_members_enriched_depleted_in_CREs_20210616.csv", row.names = T)
+  View()
+```
+
+## Pie plot of enriched/depleted TFs
+
+Number and percentage of TFs enriched or depleted in enhancer_STARR-seq, promoter, and each enhancer groups.
+
+### En/Pro/Cluster
+
+```{r}
+ rm(list = ls())
+  library(UpSetR)
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz") %>%
+    dplyr::filter(Methy == "Col", 
+                  str_detect(annotation, "Kmeans|^sCorePro$|Enhancer_STARRseq"))
+  unique(results_sig$annotation)
+  metaInfo <- fread("./refgenome/GSE60143_RAW_DAPSeq/TableS1D.tsv") %>%
+    dplyr::rename(geneID = AT_ID)
+    
+# prepare table for Upset
+  df <- results_sig %>%
+    dplyr::mutate(Type = str_replace(Type, "\\*+", ""), 
+                  fold_type = ifelse(Type == "ns", "ns", fold_type), 
+                  value = str_c(annotation, fold_type, sep = "-")) %>%
+    pivot_wider(id_cols = c(Family, Protein), names_from = annotation, values_from = value) %>%
+    pivot_longer(cols = matches("Kmeans|STARR|CorePro"), names_to = "CRE", values_to = "enrich_type") %>%
+    dplyr::mutate(value = 1) %>%
+    dplyr::select(-CRE) %>%
+    pivot_wider(names_from = enrich_type, values_from = value, values_fill = 0)
+
+  
+# plot
+  # bar plot
+  SetSize <- map_dbl(df[,3:ncol(df)], function(x){sum(x)}) %>% sort(decreasing = T)
+  
+  tmp <- data.frame(Enhancer = names(SetSize), 
+             Number = SetSize) %>%
+    dplyr::mutate(Method = str_replace_all(Enhancer, c("(Kmeans.+)-.+" = "\\1",
+                                                       "KmeansCluster" = "C",
+                                                       "sCorePro.+" = "Promoter",
+                                                       "Enhancer.+" = "Enhancer")), 
+                  Type = str_replace_all(Enhancer, ".+-(.+?)", "\\1"),
+                  Type = factor(Type, levels = c("Enriched", "ns", "Depleted"))) %>%
+    group_by(Method) %>%
+    dplyr::mutate(Total = sum(Number),
+                  Percent = scales::percent(Number/Total, accuracy = 0.01),
+                  label = str_c(Number, "\n", Percent)) 
+  
+  # bar plot
+  tmp %>%
+    ggplot(aes(y = Number, x = Type, fill = Type)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_grid(. ~ Method) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor[c(1,3,2)]) +
+      ylab("Number of TFs") +
+      theme(# legend.position = c(0.92, 0.88),
+            legend.position = "none",
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.title.x = element_blank(),
+            panel.spacing.x = unit(0.08, "cm")) + 
+      geom_text(aes(label = Number), nudge_y = 8, size = 5/.pt) + 
+      scale_y_continuous(expand = expansion(mult = c(0, 0.08)))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/Barplot_Number_of_TFs_enriched_depleted_in_KmeansCluster_Promoter_20210703",
+                       width = 8, height = 6)
+  
+# pie plot (Enhancer + Promoter)
+  tmp %>%
+    group_by(Method) %>%
+    dplyr::filter(str_detect(Method, "Enhancer|Promoter")) %>%
+    dplyr::arrange(Method, desc(Type)) %>%
+    dplyr::mutate(PercentNum = Number/Total,
+                  y_pos = cumsum(PercentNum) - PercentNum/2) %>%
+    ggplot(aes(y = PercentNum, x = 0, fill = Type)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_grid(. ~ Method) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor[c(1,3,2)]) +
+      ylab("Number of TFs") +
+      theme(# legend.position = c(0.92, 0.88),
+            legend.position = "bottom",
+            legend.title = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            panel.spacing.x = unit(0.08, "cm"),
+            legend.margin = margin(-10, 0, 0, 0)) + 
+      geom_text(aes(label = Number, y = y_pos), size = 6/.pt) +
+      # scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+      coord_polar(theta = "y") +
+      theme(panel.border = element_blank())
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/PiePlot_Percent_of_TFs_enriched_depleted_in_Enhancer_Promoter_20210703",
+                       width = 6, height = 4)
+  
+# pie plot (Kmeans cluster)
+  tmp %>%
+    group_by(Method) %>%
+    dplyr::filter(str_detect(Method, "Enhancer|Promoter", negate = T)) %>%
+    dplyr::arrange(Method, desc(Type)) %>%
+    dplyr::mutate(PercentNum = Number/Total,
+                  y_pos = cumsum(PercentNum) - PercentNum/2) %>%
+    ggplot(aes(y = PercentNum, x = 0, fill = Type)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_grid(. ~ Method) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor[c(1,3,2)]) +
+      ylab("Number of TFs") +
+      theme(# legend.position = c(0.92, 0.88),
+            legend.position = "bottom",
+            legend.title = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            panel.spacing.x = unit(0.08, "cm"),
+            legend.margin = margin(-10, 0, 0, 0)) + 
+      geom_text(aes(label = Number, y = y_pos), size = 6/.pt) +
+      # scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+      coord_polar(theta = "y") +
+      theme(panel.border = element_blank())
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/PiePlot_Percent_of_TFs_enriched_depleted_in_Enhancer_Cluster_20210703",
+                       width = 12, height = 4)
+```
+
+### TS/HK enhancer
+
+```{r}
+ rm(list = ls())
+  library(UpSetR)
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz") %>%
+    dplyr::filter(Methy == "Col", 
+                  str_detect(annotation, "TSenhancer|HKenhancer"))
+  unique(results_sig$annotation)
+  metaInfo <- fread("./refgenome/GSE60143_RAW_DAPSeq/TableS1D.tsv") %>%
+    dplyr::rename(geneID = AT_ID)
+    
+# prepare table for Upset
+  df <- results_sig %>%
+    dplyr::mutate(Type = str_replace(Type, "\\*+", ""), 
+                  fold_type = ifelse(Type == "ns", "ns", fold_type), 
+                  value = str_c(annotation, fold_type, sep = "-")) %>%
+    pivot_wider(id_cols = c(Family, Protein), names_from = annotation, values_from = value) %>%
+    pivot_longer(cols = matches("enhancer"), names_to = "CRE", values_to = "enrich_type") %>%
+    dplyr::mutate(value = 1) %>%
+    dplyr::select(-CRE) %>%
+    pivot_wider(names_from = enrich_type, values_from = value, values_fill = 0)
+
+  
+# plot
+  # bar plot
+  SetSize <- map_dbl(df[,3:ncol(df)], function(x){sum(x)}) %>% sort(decreasing = T)
+  
+  tmp <- data.frame(Enhancer = names(SetSize), 
+             Number = SetSize) %>%
+    dplyr::mutate(Method = str_replace_all(Enhancer, c("(.+)-.+" = "\\1",
+                                                       "KmeansCluster" = "C",
+                                                       "TS" = "Tissue-specific ",
+                                                       "HK" = "House-keeping ")), 
+                  Type = str_replace_all(Enhancer, ".+-(.+?)", "\\1"),
+                  Type = factor(Type, levels = c("Enriched", "ns", "Depleted"))) %>%
+    group_by(Method) %>%
+    dplyr::mutate(Total = sum(Number),
+                  Percent = scales::percent(Number/Total, accuracy = 0.01),
+                  label = str_c(Number, "\n", Percent)) 
+  
+
+# pie plot (Enhancer + Promoter)
+  tmp %>%
+    group_by(Method) %>%
+    dplyr::filter(str_detect(Method, "enhancer")) %>%
+    dplyr::arrange(Method, desc(Type)) %>%
+    dplyr::mutate(PercentNum = Number/Total,
+                  y_pos = cumsum(PercentNum) - PercentNum/2) %>%
+    ggplot(aes(y = PercentNum, x = 0, fill = Type)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_grid(. ~ Method) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor[c(1,3,2)]) +
+      ylab("Number of TFs") +
+      theme(# legend.position = c(0.92, 0.88),
+            legend.position = "bottom",
+            legend.title = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            panel.spacing.x = unit(0.08, "cm"),
+            legend.margin = margin(-10, 0, 0, 0)) + 
+      geom_text(aes(label = Number, y = y_pos), size = 6/.pt) +
+      # scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+      coord_polar(theta = "y") +
+      theme(panel.border = element_blank())
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/PiePlot_Percent_of_TFs_enriched_depleted_in_TS_HK_enhancer_20210703",
+                       width = 6, height = 4)
+  
+```
+
+
+### En four methods
+```{r}
+ rm(list = ls())
+  library(UpSetR)
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz") %>%
+    dplyr::filter(Methy == "Col", 
+                  str_detect(annotation, "Enhancer_")) %>%
+    dplyr::mutate(annotation = str_replace_all(annotation, "Enhancer_", ""),
+                  annotation = factor(annotation, levels = str_replace_all(toolkit_tyj$AtEn_level, "Enhancer_", "")))
+  unique(results_sig$annotation)
+  metaInfo <- fread("./refgenome/GSE60143_RAW_DAPSeq/TableS1D.tsv") %>%
+    dplyr::rename(geneID = AT_ID)
+    
+# prepare table for Upset
+  df <- results_sig %>%
+    dplyr::mutate(Type = str_replace(Type, "\\*+", ""), 
+                  fold_type = ifelse(Type == "ns", "ns", fold_type), 
+                  value = str_c(annotation, fold_type, sep = "-")) %>%
+    pivot_wider(id_cols = c(Family, Protein), names_from = annotation, values_from = value) %>%
+    pivot_longer(cols = Zhu2015:Meng2021, names_to = "CRE", values_to = "enrich_type") %>%
+    dplyr::mutate(value = 1) %>%
+    dplyr::select(-CRE) %>%
+    pivot_wider(names_from = enrich_type, values_from = value, values_fill = 0)
+
+  
+# plot
+  # bar plot
+  SetSize <- map_dbl(df[,3:ncol(df)], function(x){sum(x)}) %>% sort(decreasing = T)
+  
+  tmp <- data.frame(Enhancer = names(SetSize), 
+             Number = SetSize) %>%
+    dplyr::mutate(Method = str_replace_all(Enhancer, c("(^.+)-.+" = "\\1")), 
+                  Type = str_replace_all(Enhancer, ".+-(.+?)", "\\1"),
+                  Type = factor(Type, levels = c("Enriched", "ns", "Depleted")),
+                  Method = factor(Method, levels = str_replace_all(toolkit_tyj$AtEn_level, "Enhancer_", ""))) %>%
+    group_by(Method) %>%
+    dplyr::mutate(Total = sum(Number),
+                  Percent = scales::percent(Number/Total, accuracy = 0.01),
+                  label = str_c(Number, "\n", Percent)) 
+  
+  # bar plot
+  tmp %>%
+    ggplot(aes(y = Number, x = Type, fill = Type)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_grid(. ~ Method) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor[c(1,3,2)]) +
+      ylab("Number of TFs") +
+      theme(# legend.position = c(0.92, 0.88),
+            legend.position = "none",
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.title.x = element_blank(),
+            panel.spacing.x = unit(0.08, "cm")) + 
+      geom_text(aes(label = Number), nudge_y = 8, size = 5/.pt) + 
+      scale_y_continuous(expand = expansion(mult = c(0, 0.08)))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/Barplot_Number_of_TFs_enriched_depleted_in_EnhancerFour_methods_20210703",
+                       width = 8, height = 6)
+
+  tmp %>%
+    group_by(Method) %>%
+    dplyr::arrange(Method, desc(Type)) %>%
+    dplyr::mutate(PercentNum = Number/Total,
+                  y_pos = cumsum(PercentNum) - PercentNum/2) %>%
+    ggplot(aes(y = PercentNum, x = 0, fill = Type)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_wrap("Method", ncol = 2) + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor[c(1,3,2)]) +
+      ylab("Number of TFs") +
+      theme(# legend.position = c(0.92, 0.88),
+            legend.position = "bottom",
+            legend.title = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            panel.spacing.x = unit(0.08, "cm"),
+            legend.margin = margin(-10, 0, 0, 0)) + 
+      geom_text(aes(label = Number, y = y_pos), size = 6/.pt) +
+      # scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+      coord_polar(theta = "y") +
+      theme(panel.border = element_blank())
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/PiePlot_Percent_of_TFs_enriched_depleted_in_EnhancerFour_methods_20210703",
+                       width = 6, height = 6)
+```
+
+
+# Venn/upset plot of TFs
+
+## Pro vs En
+Promoter (-50bp, 50bp) vs Enhancer_STARRseq (600bp)
+Promoter or enhancers overlapped with the other elements were discarded in analysis.
+
+```{r}
+  rm(list = ls())
+  library(UpSetR)
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz") %>%
+    dplyr::filter(Methy == "Col", 
+                  str_detect(annotation, "(Enhancer_STARRseq|sCorePro)"))
+  metaInfo <- fread("./refgenome/GSE60143_RAW_DAPSeq/TableS1D.tsv") %>%
+    dplyr::rename(geneID = AT_ID)
+    
+  # prepare table for Upset
+  df <- results_sig %>%
+    dplyr::mutate(Type = str_replace(Type, "\\*+", ""), 
+                  annotation = str_replace_all(annotation, c("sCorePro" = "Promoter",
+                                                             "Enhancer_STARRseq" = "Enhancer"))) %>%
+    pivot_wider(id_cols = c(Family, Protein), names_from = annotation, values_from = Type) %>%
+    dplyr::mutate(Promoter = str_c("Promoter", Promoter, sep = "_"), 
+                  Enhancer = str_c("Enhancer", Enhancer, sep = "_")) %>%
+    pivot_longer(cols = Promoter:Enhancer, names_to = "CRE", values_to = "enrich_type") %>%
+    dplyr::mutate(value = 1, 
+                  enrich_type = str_replace(enrich_type, " ", "")) %>%
+    dplyr::select(-CRE) %>%
+    pivot_wider(names_from = enrich_type, values_from = value, values_fill = 0)
+
+
+  
+## all in one figure
+  png("./R7.TFs/Upset_TFs_sCorePro_sEnhancer_enriched_depleted_20210703.png",
+      width = 12, height = 8, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_depleted_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = as.data.frame(df), 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df)[3:ncol(df)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1,
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 300, 
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+  
+# only enriched TFs
+  df_tmp <- df %>% as.data.frame() %>% dplyr::select(1:2, contains("Enriched"))
+  png("./R7.TFs/Upset_TFs_sCorePro_sEnhancer_enriched_20210703.png",
+      width = 8, height = 6, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = df_tmp, 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df_tmp)[3:ncol(df_tmp)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1,
+                  mainbar.y.label = "TFs enriched in CREs",
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 300, 
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+
+# only depleted TFs
+  df_tmp <- df %>% as.data.frame() %>% dplyr::select(1:2, contains("Depleted"))
+  png("./R7.TFs/Upset_TFs_sCorePro_sEnhancer_depleted_20210703.png",
+      width = 8, height = 6, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = df_tmp, 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df_tmp)[3:ncol(df_tmp)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1,
+                  mainbar.y.label = "TFs depleted in CREs",
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 300, 
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+  
+# only TFs not significantly enriched or depleted in Promoter and Enhancer
+  df_tmp <- df %>% as.data.frame() %>% dplyr::select(1:2, contains("ns"))
+  png("./R7.TFs/Upset_TFs_sCorePro_sEnhancer_ns_20210703.png",
+      width = 8, height = 6, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = df_tmp, 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df_tmp)[3:ncol(df_tmp)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1,
+                  mainbar.y.label = "TFs not enriched/depleted in CREs",
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 300, 
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+
+```
+
+
+## Enhancer, HK vs TS.
+TFs enriched in enhancers located near house-keeping or tissue-specific genes.
+
+```{r}
+  rm(list = ls())
+  library(UpSetR)
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz") %>%
+    dplyr::filter(Methy == "Col", 
+                  str_detect(annotation, "(TSenhancer|HKenhancer)"))
+  unique(results_sig$annotation) %>%sort()
+  
+  metaInfo <- fread("./refgenome/GSE60143_RAW_DAPSeq/TableS1D.tsv") %>%
+    dplyr::rename(geneID = AT_ID)
+    
+  # prepare table for Upset
+  df <- results_sig %>%
+    dplyr::mutate(Type = str_replace(Type, "\\*+", ""), 
+                  annotation = str_replace_all(annotation, c("TSenhancer" = "TS_enhancer",
+                                                             "HKenhancer*" = "HK_enhancer"))) %>%
+    pivot_wider(id_cols = c(Family, Protein), names_from = annotation, values_from = Type) %>%
+    dplyr::mutate(TS_enhancer = str_c("TS", TS_enhancer, sep = "_"), 
+                  HK_enhancer = str_c("HK", HK_enhancer, sep = "_")) %>%
+    pivot_longer(cols = TS_enhancer:HK_enhancer, names_to = "CRE", values_to = "enrich_type") %>%
+    dplyr::mutate(value = 1, 
+                  enrich_type = str_replace(enrich_type, " ", "")) %>%
+    dplyr::select(-CRE) %>%
+    pivot_wider(names_from = enrich_type, values_from = value, values_fill = 0)
+
+
+  
+## all in one figure
+  png("./R7.TFs/Upset_TFs_enriched_depleted_TS_HK_enhancers_20220519.png",
+      width = 9, height = 6, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_depleted_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = as.data.frame(df), 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df)[3:ncol(df)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1, nintersects = NA,
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 450,
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+  
+# only enriched TFs
+  df_tmp <- df %>% as.data.frame() %>% dplyr::select(1:2, contains("Enriched"))
+  png("./R7.TFs/Upset_TFs_enriched_TS_HK_enhancers_20220519.png",
+      width = 8, height = 6, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = df_tmp, 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df_tmp)[3:ncol(df_tmp)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1, empty.intersections = T, 
+                  mainbar.y.label = "TFs enriched in CREs",
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 300, 
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+
+# only depleted TFs
+  df_tmp <- df %>% as.data.frame() %>% dplyr::select(1:2, contains("Depleted"))
+  png("./R7.TFs/Upset_TFs_depleted_TS_HK_enhancers_20220519.png",
+      width = 8, height = 6, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = df_tmp, 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df_tmp)[3:ncol(df_tmp)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1, empty.intersections = T, 
+                  mainbar.y.label = "TFs depleted in CREs",
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 300, 
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+  
+# only TFs not significantly enriched or depleted in Promoter and Enhancer
+  df_tmp <- df %>% as.data.frame() %>% dplyr::select(1:2, contains("ns"))
+  png("./R7.TFs/Upset_TFs_ns_TS_HK_enhancers_20220519.png",
+      width = 8, height = 6, units = "cm", res = 600, bg = "transparent")
+  # pdf("./R7.TFs/Upset_TFs_enriched_CorePro_Enhancer600CorePro_20210703.pdf",
+  #     width = 8/.pt, height = 6/.pt, bg = "transparent")
+    UpSetR::upset(data = df_tmp, 
+                  nsets = NA,
+                  text.scale = 0.7, 
+                  sets = colnames(df_tmp)[3:ncol(df_tmp)], 
+                  order.by = c("freq"), 
+                  decreasing = c(TRUE,T), 
+                  point.size = 1,
+                  line.size = 0.1, empty.intersections = T,
+                  mainbar.y.label = "TFs not enriched/depleted in CREs",
+                  # show.numbers = T,
+                  # queries = list(list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Enriched"), 
+                  #             color = pal_npg()(9)[1], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Enriched", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[5], active = T),
+                  #                list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_Enriched"), 
+                  #             color = "gold", active = T),
+                  #               list(query = intersects, params = list("Enhancer_Depleted", "Promoter_Depleted"), 
+                  #             color = pal_npg()(9)[4], active = T),
+                  #                list(query = intersects, params = list("Enhancer_ns", "Promoter_ns"), 
+                  #             color = pal_npg()(9)[6], active = T)
+                  #             ), 
+                  main.bar.color = "grey60", 
+                  set_size.show = T, 
+                  set_size.scale_max = 450, 
+                  # sets.bar.color = pal_npg()(9)[c(1,6,3,6,1,3)]
+                  )
+  dev.off()
+```
+
+
+# enriched TFs (family level)
+Number of TF family members enriched or depleted in CREs.
+
+## . Summary of TF families
+Families size.
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  dep_ls <- fread("./refgenome/GSE60143_RAW_DAPSeq/meta_info_byTYJ_20210324.tsv")
+  dep_ls %>%
+    dplyr::select(DAPSeq, Methy, Family) %>%
+    map(., unique)
+  table(dep_ls$Methy, dep_ls$Family)
+  table(dep_ls$Methy)
+  
+  MinFamilySize <- 5
+  
+  # only Col (raw DNA with methylation)
+  df<- dep_ls %>%
+    as_tibble() %>%
+    dplyr::filter(Methy == "Col") %>%
+    group_by(Family) %>%
+    dplyr::mutate(FamilySize = n(), xlab = str_c(Family, "(", FamilySize, ")")) %>%
+    ungroup() %>%
+    arrange(desc(FamilySize)) %>%
+    dplyr::mutate(Family = fct_reorder(Family, .x = FamilySize, .fun = median, .desc = T),
+                  xlab = fct_reorder(xlab, .x = FamilySize, .fun = median, .desc = T)) %>%
+    arrange(Family)
+
+  # Family size
+  df %>%
+    dplyr::select(Family, FamilySize) %>%
+    distinct() %>%
+    arrange(desc(Family)) %>%
+    ggplot(aes(y = Family, x = FamilySize)) +
+      # geom_beeswarm() + 
+      # geom_violin(scale = "width") + 
+      geom_col(fill = "grey55") +
+      # scale_y_log10() +
+      toolkit_tyj$theme_my + 
+      # theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+      geom_text(aes(y = Family, x = ifelse(FamilySize > 6, FamilySize/2, FamilySize + 3), label = FamilySize),
+                size = 6/.pt) +
+      ggtitle("Size of each TF family") + 
+      xlab("Number of members")
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/DAPseq_Methy_Peak_Size_of_TF_Family",
+                       width = 8, height = 12, device = "png")
+  
+  
+  # Number of regions for selected families
+  df_lab <- df %>%
+    dplyr::filter(FamilySize >= MinFamilySize) %>%
+    group_by(Family, xlab, FamilySize) %>%
+    summarise(MedianNum = median(NumRegions),
+              MinNum = min(NumRegions), 
+              MaxNum = max(NumRegions))
+  df %>%
+    dplyr::filter(FamilySize >= MinFamilySize) %>%
+    ggplot(aes(y = xlab, x = NumRegions)) + 
+      geom_violin(scale = "width", fill = "transparent") + 
+      geom_boxplot(width = 0.2, fill = "transparent", outlier.shape = NA) +
+      geom_jitter(shape = 1, height = 0.2, alpha = 1/3) +
+      toolkit_tyj$theme_my + 
+      # geom_text_repel(aes(x = MedianNum, y = xlab, label = MedianNum), data = df_lab,
+      #                 size = 6/.pt, color = "steelblue", hjust = -2, vjust = 1.3) + 
+      geom_shadowtext(aes(x = MedianNum, y = xlab, label = MedianNum), data = df_lab,
+                      size = 6/.pt, color = "red", hjust = -2, vjust = 1.3, bg.colour = "white") +
+      ggtitle("Number of binding sizes of TFs belong to each family") +
+      labs(caption = "Median was labeled")
+  toolkit_tyj$SavePlot(filename_prefix = str_c("./R7.TFs/DAPseq_Methy_Peak_number_for_each_TF_Family_larger", MinFamilySize),
+                       width = 8, height = 12, device = "png")
+  
+  # select top families
+  df_lab %>%
+    fwrite(., file = str_c("./R7.TFs/List_of_TFfamilies_larger_than", MinFamilySize, "_20220519.csv"))
+
+```
+
+## plot (Number of TF family members)
+
+### load
+```{r}
+  rm(list = ls())
+  library(UpSetR)
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz") %>%
+    dplyr::filter(Methy == "Col") %>%
+    dplyr::filter(padj_BH < 0.05) %>%
+    group_by(annotation, Family, fold_type) %>%
+    dplyr::summarise(n = n()) %>%
+    dplyr::mutate(fold_type = factor(fold_type, levels = c("Enriched", "Depleted")))
+  
+  Top_family <- fread("./R7.TFs/List_of_TFfamilies_larger_than5_20220519.csv") %>%
+    dplyr::mutate(xlab = str_replace_all(xlab, "\\(", " (")) %>%
+    dplyr::mutate(xlab = factor(xlab, levels = .$xlab)) %>%
+    as_tibble 
+```
+
+
+### En vs Pro
+
+```{r}
+  sort(unique(results_sig$annotation))
+  # prepare
+  df <- results_sig %>%
+    left_join(., Top_family) %>%
+    dplyr::filter(str_detect(annotation, "^sEnhancer$|sCorePro"),
+                  !is.na(FamilySize)) %>% 
+    dplyr::mutate(Rate = n/FamilySize,
+                  annotation = str_replace_all(annotation, c("sEnhancer" = "Enhancer", 
+                                                             "sCorePro" = "Promoter"))) %>%
+    group_by(annotation, xlab, Family) %>%
+    arrange(desc(fold_type)) %>%
+    dplyr::mutate(ypos = cumsum(Rate) - Rate/2,
+                  fold_type = factor(fold_type, levels = c("Enriched", "Depleted")))
+  
+  # plot number
+  df %>%
+    ggplot(aes(x = xlab, y = Rate, fill = fold_type)) + 
+      geom_col() +
+      facet_grid(annotation ~ .) +
+      toolkit_tyj$theme_my +
+      theme(legend.key.size = unit(0.3, "cm"),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "bottom",
+            legend.margin = margin(-12,0,0,0),
+            axis.title.x = element_blank(),
+            legend.title = element_blank()) +
+      scale_y_continuous(labels = scales::percent) +
+      geom_text(aes(x = xlab, y = ypos, label = n), size = 5/.pt, color = "grey25") +
+      ylab("Percentage") +
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor)# + 
+      # theme(panel.border = element_blank(), axis.line = element_line())
+  
+  toolkit_tyj$SavePlot(filename_prefix = "R7.TFs/Barplot_Percentage_TFfamily_members_enriched_depleted_in_sEnhancer_sCorePro",
+                       width = 9, height = 5)
+```
+
+
+
+### Enhancer, TS vs HK
+
+```{r}
+  sort(unique(results_sig$annotation))
+  # prepare
+  df <- results_sig %>%
+    left_join(., Top_family) %>%
+    dplyr::filter(str_detect(annotation, "^TSenhancer$|HKenhancer"),
+                  !is.na(FamilySize)) %>% 
+    dplyr::mutate(Rate = n/FamilySize,
+                  annotation = str_replace_all(annotation, c("TSenhancer" = "Tissue-specific", 
+                                                             "HKenhancer" = "House-keeping"))) %>%
+    group_by(annotation, xlab, Family) %>%
+    arrange(desc(fold_type)) %>%
+    dplyr::mutate(ypos = cumsum(Rate) - Rate/2)
+  
+  # plot
+  df %>%
+    ggplot(aes(x = xlab, y = Rate, fill = fold_type)) + 
+      geom_col() +
+      facet_grid(annotation ~ .) +
+      toolkit_tyj$theme_my +
+      theme(legend.key.size = unit(0.3, "cm"),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "bottom",
+            legend.margin = margin(-12,0,0,0),
+            axis.title.x = element_blank(),
+            legend.title = element_blank()) +
+      scale_y_continuous(labels = scales::percent) +
+      geom_text(aes(x = xlab, y = ypos, label = n), size = 5/.pt, color = "grey25") +
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor) +
+      ylab("Percentage")
+  
+  toolkit_tyj$SavePlot(filename_prefix = "R7.TFs/Barplot_Percentage_TFfamily_members_enriched_depleted_in_TS_HK_enhancer",
+                       width = 9, height = 5.5)
+  
+```
+
+
+### Enhancer, Kmeans cluster
+
+```{r}
+  sort(unique(results_sig$annotation))
+  # prepare
+  df <- results_sig %>%
+    left_join(., Top_family) %>%
+    dplyr::filter(str_detect(annotation, "Kmeans"),
+                  !is.na(FamilySize)) %>% 
+    dplyr::mutate(Rate = n/FamilySize,
+                  annotation = str_replace_all(annotation, c("KmeansCluster" = "C", 
+                                                             "HKenhancer" = "House-keeping"))) %>%
+    group_by(annotation, xlab, Family) %>%
+    arrange(desc(fold_type)) %>%
+    dplyr::mutate(ypos = cumsum(Rate) - Rate/2)
+  
+  # plot
+  df %>%
+    ggplot(aes(x = xlab, y = Rate, fill = fold_type)) + 
+      geom_col() +
+      facet_grid(annotation ~ .) +
+      toolkit_tyj$theme_my +
+      theme(legend.key.size = unit(0.3, "cm"),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "bottom",
+            legend.margin = margin(-12,0,0,0),
+            axis.title.x = element_blank(),
+            legend.title = element_blank()) +
+      scale_y_continuous(labels = scales::percent) +
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor[c(1,2)]) +
+      geom_text(aes(x = xlab, y = ypos, label = n), size = 5/.pt, color = "grey25") +
+      ylab("Percentage")
+  
+  toolkit_tyj$SavePlot(filename_prefix = "R7.TFs/Barplot_Percentage_TFfamily_members_enriched_depleted_in_KmeansCluster", 
+                       width = 9, height = 8)
+  
+```
+
+### En, four methods.
+```{r}
+  sort(unique(results_sig$annotation))
+  # prepare
+  df <- results_sig %>%
+    left_join(., Top_family) %>%
+    dplyr::filter(str_detect(annotation, "Enhancer_"),
+                  !is.na(FamilySize)) %>% 
+    dplyr::mutate(Rate = n/FamilySize,
+                  annotation = str_replace_all(annotation, "Enhancer_", ""),
+                  annotation = factor(annotation, levels = str_replace_all(toolkit_tyj$AtEn_level, "Enhancer_", "")),
+                  fold_type = factor(fold_type, levels = c("Enriched", "Depleted"))) %>%
+    group_by(annotation, xlab, Family) %>%
+    arrange(desc(fold_type)) %>%
+    dplyr::mutate(ypos = cumsum(Rate) - Rate/2,
+                  annotation = toolkit_tyj$Format_En_lev(annotation))
+  
+  # plot
+  df %>%
+    ggplot(aes(x = xlab, y = Rate, fill = fold_type)) + 
+      geom_col() +
+      facet_grid(annotation ~ .) +
+      toolkit_tyj$theme_my +
+      theme(legend.key.size = unit(0.3, "cm"),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "bottom",
+            legend.margin = margin(-12,0,0,0),
+            axis.title.x = element_blank(),
+            legend.title = element_blank()) +
+      scale_y_continuous(labels = scales::percent) +
+      scale_fill_manual(values = toolkit_tyj$AtEn_EnrichDepletecolor) +
+      geom_text(aes(x = xlab, y = ypos, label = n), size = 5/.pt, color = "grey25") +
+      ylab("Percentage")
+  
+  toolkit_tyj$SavePlot(filename_prefix = "R7.TFs/Barplot_Percentage_TFfamily_members_enriched_depleted_in_Enhancer_FourMethods", 
+                       width = 8.5, height = 8)
+  
+```
+
+
+
+## plot (Intersect, only enriched TFs)
+classify TFs into different types based on they enriched in different several CRE type or not.
+for example: compare situation of TFs enriched in Enhancer/Promoter can classify them into  four types: Both (enriched in En/Pro), Enhancer-specific, Promoter-specific, Other (depleted or ns).
+
+### load
+```{r}
+  rm(list = ls())
+  library(UpSetR)
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R7.TFs/All_GAT_100000_results_padjBH_siglable_20210609.csv.gz") %>%
+    dplyr::filter(Methy == "Col") %>%
+    dplyr::mutate(Type = str_c(annotation, Type, sep = "_"), 
+                  Type = str_replace_all(Type, "\\s+\\*+", ""))
+  
+  Top_family <- fread("./R7.TFs/List_of_TFfamilies_larger_than5_20220519.csv") %>%
+    dplyr::mutate(xlab = str_replace_all(xlab, "\\(", " (")) %>%
+    dplyr::mutate(xlab = factor(xlab, levels = .$xlab)) %>%
+    as_tibble 
+```
+
+### Pro vs En
+
+```{r}
+  df <- results_sig %>%
+    dplyr::filter() %>%
+    left_join(., Top_family) %>%
+    dplyr::filter(str_detect(annotation, "^sEnhancer$|sCorePro"),
+                  !is.na(FamilySize)) %>% 
+    dplyr::mutate(annotation = str_replace_all(annotation, c("sEnhancer" = "Enhancer", 
+                                                             "sCorePro" = "Promoter"))) %>%
+    pivot_wider(id_cols = c(Family:MedianWidthRegion, xlab:MaxNum), names_from = annotation, values_from = Type) %>%
+    dplyr::mutate(TF_type = ifelse(str_detect(Promoter, "Enriched") & !str_detect(Enhancer, "Enriched"), "Promoter-specific TFs", "Background level TFs"),
+                  TF_type = ifelse(!str_detect(Promoter, "Enriched") & str_detect(Enhancer, "Enriched"), "Enhancer-specific TFs", TF_type),
+                  TF_type = ifelse(str_detect(Promoter, "Enriched") & str_detect(Enhancer, "Enriched"), "Shared TFs", TF_type)) %>%
+    group_by(Family, xlab, FamilySize, TF_type) %>%
+    dplyr::summarise(Num = n()) %>%
+    dplyr::mutate(Rate = Num / FamilySize,
+                  TF_type = factor(TF_type, levels = c("Shared TFs", 
+                                                       "Enhancer-specific TFs", 
+                                                       "Promoter-specific TFs", 
+                                                       "Background level TFs") %>%rev)) %>%
+    group_by(Family, xlab, FamilySize) %>%
+    arrange(Family, desc(TF_type)) %>%
+    dplyr::mutate(ypos = cumsum(Rate) - Rate/2) 
+
+# arrange TF families based on their size.
+  df %>%
+    dplyr::filter(TF_type != "Background level TFs") %>%
+      ggplot(aes(x = xlab, y = Rate, fill = TF_type)) + 
+        geom_col(alpha = 3/4) +
+        toolkit_tyj$theme_my +
+        theme(legend.key.size = unit(0.3, "cm"),
+              axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+              legend.position = "bottom",
+              legend.margin = margin(-12,0,0,0),
+              axis.title.x = element_blank(),
+              legend.title = element_blank()) +
+        scale_y_continuous(labels = scales::percent) +
+        geom_text(aes(x = xlab, y = ypos, label = Num), size = 5/.pt, color = "grey25") +
+        scale_fill_manual(values = toolkit_tyj$AtEn_EnPro_Color) +
+        ylab("Percentage")
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/Barplot_Percentage_TFfamily_members_enriched_in_Enhancer_Promoter",
+                       width = 8.47, height = 4.5, device = c("png", "pdf"))
+  
+# arrange TF families based on Percentage of Both, En, and Pro.
+  df_tmp <- df %>%
+    ungroup %>%
+    dplyr::select(xlab, TF_type, Rate) %>%
+    pivot_wider(names_from = TF_type, values_from = Rate, values_fill = 0) %>%
+    arrange(desc(`Shared TFs`), desc(`Enhancer-specific TFs`), desc(`Promoter-specific TFs`))
+  df %>%
+    # dplyr::filter(TF_type != "Other") %>%
+      dplyr::mutate(xlab = factor(xlab, levels = df_tmp$xlab)) %>%
+      ggplot(aes(x = xlab, y = Rate, fill = TF_type)) + 
+        geom_col(alpha = 3/4) +
+        toolkit_tyj$theme_my +
+        theme(legend.key.size = unit(0.25, "cm"),
+              axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+              legend.position = "bottom",
+              legend.margin = margin(-12,0,0,0),
+              axis.title.x = element_blank(),
+              legend.title = element_blank()) +
+        guides(fill = guide_legend(ncol = 2)) +
+        scale_y_continuous(labels = scales::percent) +
+        geom_text(aes(x = xlab, y = ypos, label = Num), size = 5/.pt, color = "grey25") +
+        scale_fill_manual(values = c("skyblue", "#3365A8", toolkit_tyj$AtEn_EnPro_Color[1], 
+                                     "darkred")) +
+        ylab("Percentage")
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R7.TFs/Barplot_Percentage_TFfamily_members_enriched_in_Enhancer_Promoter_Arranged",
+                       width = 8.47, height = 4.5, device = c("png", "pdf"))
+  
+```
+
+
+# percentage/distribution of TS/HK genes/Enhancers
+`Fig2 & S2`
+
+
+
+
+
+

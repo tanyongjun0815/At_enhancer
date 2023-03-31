@@ -1,0 +1,809 @@
+---
+title: "Fig7&S7_Other_species"
+author: "TYJ"
+date: '2022-05-23'
+output:
+  word_document: default
+  html_document: default
+  pdf_document:
+      latex_engine: xelatex
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, background="transparent", fig.align='center' }
+knitr::opts_chunk$set(echo = T, tidy = T, 
+                      tidy.opts=list(width.cutoff=20),
+                      include = T, highlight = T, warning = F, 
+                      fig.align = "c", eval = F)
+options(knitr.kable.NA = '')
+library(pheatmap)
+library(grid)
+library(data.table)
+library(GenomicRanges)
+library(tidyverse)
+source("D:/SUST/code/TanYongjun_code.R")
+```
+
+# 0. related source
+
+## . Enhancers identified in plants
+
+reported:
+
+-   1\. maize:
+
+    -   Ricci et al., 2019: provide a file contain enhancer activity ratio of all regions (Four columns: chr, start, end, ratio; and these data were not filted). (AGP v4 reference genome).
+
+    -   Oka et al., 2017: identified 1495 enhancers based on DNA methy + DHS + H3K9ac in two tissues. provided in the supplemental table 2 and 3. (B73 AGP V4 reference genome).
+
+-   2\. rice: Sun et al., 2019.
+
+-   3\. bread wheat, hexaploid (*Triticum aestivum*):
+
+    -   eRNA, Genome Biology, 2022. **bedgraph** file were provided on the GEO; Table S3 and S4 only contain four columns: gene1, gene2, count1, count2; the formula of gene id:
+
+        ![](images/paste-EE8A1452.png){width="286"}
+
+    -   Chromatin states, Genome Biology, 2019. Define distal region (\> 3kb away from TSS) in state 5 as enhancer-like elements. provide in Table S4b. (IWGSC v1.0, i.e. GCA_900519105.1)
+
+### . Summary of ATAC-STARR-seq (maize)
+
+```{r,tidy = T, tidy.opts=list(width.cutoff=50)}
+## summary of ATAC-STARR-seq results
+source("D:/SUST/code/TanYongjun_code.R")
+starr_score <- fread("./refgenome/plant_enhancer/Maize_ATAC_STARR/GSE120304_STARR_B73_enhancer_activity_ratio.txt.gz")%>%
+  dplyr::mutate(width = V3 - V2)
+
+quantile(starr_score$width, probs = seq(0, 1, 0.05))
+
+quantile(starr_score$V4, probs = seq(0, 1, 0.05))
+
+starr_score %>%
+  dplyr::filter(V4 > 0) %>%
+  makeGRangesFromDataFrame(., seqnames.field = "V1", start.field = "V2", end.field = "V3") %>%
+  GenomicRanges::reduce() %>%
+  width() %>%
+  sum()
+  ggplot(aes(x = width)) + 
+    geom_histogram()
+```
+
+
+## . STARR-seq
+
+STARR-seq were performed in four species: A.t, O.s, D.m, and H.s.
+
+
+## . collect all enhancers
+collect enhancers
+
+```{r}
+  # load 
+    rm(list = ls())
+    source("D:/SUST/code/TanYongjun_code.R")
+    
+    # D.m
+    en_1 <- fread("../homo_cis/database/fruitfly_S2/S2_enhancer_arnold_supp_table07.bed") %>%
+      dplyr::select(1:3) %>%
+      dplyr::mutate(ID = "D.melanogaster", method = "STARR_seq")
+    
+    # H.s (K562)
+    en_2 <- fread("../homo_cis/database/STARRseq_enhancer_ENCODE/STARRseq_enhancer_six_cellline_merge_hg19.bed.gz") %>%
+      dplyr::filter(cell_line == "K562") %>%
+      dplyr::select(1:3) %>%
+      dplyr::mutate(ID = "H.sapiens", method = "STARR_seq")
+    
+    # O.s
+    en_3 <- fread("./refgenome/GSE121231_Nipponbare_merged_peaks.bed.gz") %>%
+      dplyr::select(1:3) %>%
+      dplyr::mutate(ID = "O.sativa", method = "STARR_seq", 
+                    V1 = str_replace_all(V1, c("chr0" = "Chr", 
+                                           "chr" = "Chr")))
+    # A.t
+    en_4 <- fread("Enhancer_Four_types_Random_PAS_all_20220420.csv.gz") %>%
+      dplyr::filter(str_detect(method, "cSTARR|Enhancer|Intronic")) %>%
+      dplyr::mutate(method = str_replace_all(method, c("cSTARR-seq" = "Enhancer_STARRseq",
+                                                       "IntronicEnhancer" = "Enhancer_Meng2021")),
+                    ID = "A.thaliana",
+                    start = startBK, end = endBK) %>%
+      dplyr::select(seqnames:end, ID, method)
+    
+    # maize  (identified in two tissues, Oka, 2017)
+    en_5 <- readxl::read_xlsx("./refgenome/plant_enhancer/Maize_DNAmethy_DHS_H3K9ac_GenomeBiology_2017/13059_2017_1273_MOESM2_ESM.xlsx") %>%
+      dplyr::select(1:3) %>%
+      dplyr::mutate(method = "Enhancer_Oka2017", ID = "Z.m", tissue = "seedling")
+    en_5 <- readxl::read_xlsx("./refgenome/plant_enhancer/Maize_DNAmethy_DHS_H3K9ac_GenomeBiology_2017/13059_2017_1273_MOESM3_ESM.xlsx") %>%
+      dplyr::select(1:3) %>%
+      dplyr::mutate(method = "Enhancer_Oka2017", tissue = "Husk", ID = "Z.m") %>%
+      rbind(., en_5)
+    en_5 <- makeGRangesFromDataFrame(en_5) %>%
+      GenomicRanges::reduce() %>%
+      as.data.frame() %>%
+      dplyr::select(1:3) %>%
+      dplyr::mutate(ID = "Z.mays", method = "Enhancer_Oka2017")
+    
+    # wheat
+    en_6 <- fread("./refgenome/plant_enhancer/wheat_ChromatinStates_GenomeBiology_2019/Table_S4b.tsv") %>%
+      dplyr::mutate(chr = str_replace_all(chr, "_part.+", ""), 
+                    ID = "T.aestivum", method = "Enhancer_Li2019")
+    
+    colnames(en_1) <- colnames(en_2) <- colnames(en_3) <- colnames(en_4) <- colnames(en_5) <- colnames(en_6) <- colnames(en_5)
+    En_all <- rbind(en_1, en_2) %>%
+      rbind(., en_3) %>%
+      rbind(., en_4) %>%
+      rbind(., en_5) %>%
+      rbind(., en_6)
+    
+    table(En_all$ID, En_all$method)
+    saveRDS(En_all, file = "./R12_otherspecies/Enhancer_in_six_species.rds")
+```
+
+
+
+
+# Genome size; En number/density.
+
+```{r}
+  # load
+    rm(list = ls())
+    source("D:/SUST/code/TanYongjun_code.R")
+    en_all <- read_rds("./R12_otherspecies/Enhancer_in_six_species.rds")
+    # for A.t, D.m, H.s, and O.s, only chromosomes with identified enhancer were count, calculated use seqlength from TxDb.
+    g_size <- data.frame(species = c("A.thaliana", "D.melanogaster", "H.sapiens", 
+                                     "O.sativa", "T.aestivum", "Z.mays"),
+                         size = c(119.5133, 120.3815, 3036.3038,
+                                   373.8706, 14454.1, 2191.6)) 
+    
+  # plot
+    # genome size
+    g_size %>%
+      dplyr::filter(str_detect(species, "mays|aestivum", negate = T)) %>%
+      # dplyr::mutate(species = fct_reorder(species, .x = size, .fun = mean)) %>%
+      dplyr::mutate(species = factor(species, levels = toolkit_tyj$AtEn_species_level)) %>%
+      arrange(species) %>%
+      ggplot(aes(x = species, y = size, fill = species)) + 
+        geom_col(alpha = 5/6) + 
+        toolkit_tyj$theme_my + 
+        geom_text(aes(x = species, y = size + 300, 
+                      label = round(size, digits = 2)),
+                  angle = 90,
+                  size = 6/.pt) + 
+        # scale_fill_npg(alpha = 0.85) +
+        scale_fill_manual(values = toolkit_tyj$AtEn_species_color) +
+        ylab("Genome size (MB)") +
+        # xlab("Species") +
+        theme(axis.text.x = element_text(face = "italic", angle = 45, hjust = 1, vjust = 1),
+              legend.position = "none",
+              axis.title.x = element_blank()
+              # axis.text.y = element_text(angle = 90, hjust = 0.5, vjust = -1)
+              ) + 
+        scale_y_continuous(expand = expansion(add = c(100, 400)))
+    
+    toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Genome_size_four_species",
+                         width = 2.5, height = 6.57)
+    
+    # Enhancer number
+    en_all %>%
+      dplyr::filter(str_detect(ID, "mays|aestivum", negate = T),
+                    str_detect(method, "STARR")) %>%
+      dplyr::count(ID, method) %>%
+      dplyr::mutate(ID = factor(ID, levels = toolkit_tyj$AtEn_species_level)) %>%
+      ggplot(aes(x = ID, y = n, fill = ID)) + 
+        geom_col(alpha = 5/6) + 
+        toolkit_tyj$theme_my +
+        geom_text(aes(x = ID, y = n + 2800, 
+                      label = n),
+                                    angle = 90,
+                  size = 6/.pt) + 
+        scale_fill_manual(values = toolkit_tyj$AtEn_species_color) +
+        ylab("Number of enhancers") +
+        xlab("Species") +
+        theme(axis.text.x = element_text(face = "italic", angle = 45, hjust = 1, vjust = 1),
+              legend.position = "none",
+              axis.title.x = element_blank()) + 
+        scale_y_continuous(expand = expansion(add = c(100, 3200)))
+    
+    toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Enhancer_STARRseq_number_four_species",
+                         width = 2.5, height = 6.57)
+    
+    # density
+    en_all %>%
+      dplyr::filter(str_detect(ID, "mays|aestivum", negate = T),
+                    str_detect(method, "STARR")) %>%
+      dplyr::count(ID, method) %>%
+      dplyr::rename(species = ID) %>%
+      left_join(g_size) %>%
+      dplyr::mutate(en_density = n / size,
+                    species = factor(species, levels = toolkit_tyj$AtEn_species_level)) %>%
+      ggplot(aes(x = species, y = en_density, fill = species)) + 
+        geom_col(alpha = 5/6) + 
+        toolkit_tyj$theme_my +
+        geom_text(aes(x = species, y = en_density + 4, 
+                      label = round(en_density, digits = 2)),
+                                    angle = 90,
+                  size = 6/.pt) + 
+        scale_fill_manual(values = toolkit_tyj$AtEn_species_color) +
+        ylab("Number of enhancers per MB") +
+        xlab("Species") +
+        theme(axis.text.x = element_text(face = "italic", angle = 45, hjust = 1, vjust = 1),
+              legend.position = "none",
+              axis.title.x = element_blank()) + 
+        scale_y_continuous(expand = expansion(add = c(3, 5)))
+    
+    toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Enhancer_STARRseq_density_four_species",
+                         width = 2.4, height = 6.57)
+    
+```
+
+
+# GAT (Genomic features)
+Distribution of enhancers according to genomic features
+from `4.1, 202106 (At, Os, Dm, Hs)`
+
+At, Os, Dm, Hs
+calculate percent of CREs located in genomic features based on length (CREs were not resized).
+
+###### . load
+*Collect*
+```{r}
+## load
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  df <- NULL
+  for (i in list.files(path = "./R4.Distribution_of_enhancers/GAT_overlap/", 
+                       pattern = ".+_ol_GenomicFeatures_GAT_20210606.tsv")) {
+    df <- fread(paste("./R4.Distribution_of_enhancers/GAT_overlap/", 
+                      i, sep = "")) %>%
+      dplyr::mutate(species = str_replace_all(i, "(.+)_CRE.+", "\\1")) %>%
+      rbind(., df)
+  }
+  # table(df$species, df$annotation)
+  # unique(df$annotation)
+  df$annotation <- str_replace_all(df$annotation, c("Pro500" = "Promoter", 
+                                                 "Distal" = "")) %>%
+    toolkit_tyj$Aten_FormatFeatures(.)
+  
+# p adjust 
+  df <- df %>%
+    group_by(species) %>%
+    dplyr::mutate(padjBonferroni = p.adjust(pvalue, method = "bonferroni"),
+                  padjBH = p.adjust(pvalue, method = "BH"))
+```
+
+###### .Stack bar plot
+```{r}
+### Plot Percent
+  # calculate percentage of each genomic features (according to all features).
+  tmp <- df %>%
+    dplyr::filter(str_detect(track, "(Random)", negate = T), 
+                  str_detect(annotation, "TSS2TTS", negate = T)) %>%
+    group_by(species, track) %>%
+    dplyr::mutate(Percent_expect = expected / sum(expected), # 计算各feature相对基因组的比例。
+                  Percent_observed = observed / sum(observed)) %>% # 计算真实与CRE重叠各feature占基因组的比例。
+    dplyr::select(species, track, annotation, Percent_expect, Percent_observed) %>%
+    pivot_longer(cols = matches("Percent.+"))
+
+  tmpBK <- tmp %>%
+    dplyr::filter(name == "Percent_expect") %>%
+    group_by(species, annotation) %>%
+    dplyr::summarise(value = mean(value)) %>%
+    dplyr::mutate(name = "Percent_expect")
+  
+  tmp <- tmp %>%
+    dplyr::filter(name == "Percent_observed") %>%
+    full_join(., tmpBK) %>%
+    dplyr::mutate(track = ifelse(is.na(track), "Random", track), 
+                  annotation = toolkit_tyj$Aten_FormatFeatures(annotation),
+                  # annotation = factor(annotation, levels = c("Promoter", "FiveUTR", "FirstExon", "FirstIntron",
+                  #                         "OtherExon", "OtherIntron", "LastExon", "LastIntron",
+                  #                         "ThreeUTR", "DownStream", "Intergenic", "TSS2TTS")), 
+                  species1 = str_replace_all(species, c("At" = "A.thaliana", "Os" = "O.sativa", "Dm" = "D.melanogaster","Hs" = "H.sapiens")),
+                  species1 = factor(species1, levels = toolkit_tyj$AtEn_species_level),
+                  species = factor(species, levels = c("At", "Os", "Dm", "Hs")))
+  
+   # (All species, Enhancer)
+  tmp %>%
+    dplyr::filter(str_detect(track, "(Kmeans|Activity)", negate = T), 
+                  str_detect(track, "(hancer$|Random)")) %>%
+    dplyr::mutate(track = str_replace_all(track, ".+hancer", "Enhancer")) %>%
+    ggplot(aes(x = track, fill = annotation, y = value)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_grid(. ~ species1, scales = "free", space = "free") + 
+      # scale_fill_npg() + 
+      scale_fill_manual(values = c(pal_npg("nrc")(10), "grey45")) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+      # ggtitle("Distribution of CREs according to genomic features") + 
+      # labs(caption = "Length-based") + 
+      ylab("Percentage") +
+      scale_y_continuous(labels = scales::percent) +
+      theme(legend.key.size = unit(0.3, units = "cm"), legend.margin = margin(0, -3, 0, -9), 
+            strip.text = element_text(size = 5, face = "italic"), 
+            panel.spacing = unit(0.03, "cm"),
+            axis.title.x = element_blank(), legend.title = element_blank())
+
+  toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Distribution_EnhancerSTARRseq_four_species_lengthBased_20210607",
+                       width = 9, height = 6)
+  
+```
+
+###### .Enrichment profile
+```{r}
+tmp <- df %>%
+  dplyr::mutate(sigLable = toolkit_tyj$returnAsterisk(qvalue), 
+                track = str_replace_all(track, c("Os_enhancer" = "Enhancer_STARRseq", 
+                                                 "Dm_enhancer" = "Enhancer_STARRseq", 
+                                                 "^enhancer$" = "Enhancer_STARRseq",
+                                                 "^Enhancer$" = "Enhancer_STARRseq"))) %>%
+  dplyr::filter(str_detect(track, "(^Random.+)", negate = T)) %>%
+  dplyr::mutate(annotation = fct_rev(annotation), 
+                species1 = str_replace_all(species, 
+                                           c("At" = "A.thaliana", 
+                                             "Os" = "O.sativa", 
+                                             "Dm" = "D.melanogaster",
+                                             "Hs" = "H.sapiens")),
+                species1 = factor(species1, levels = toolkit_tyj$AtEn_species_level),
+                species = factor(species, levels = c("At", "Os", "Dm", "Hs")), 
+                l2fold = round(l2fold, digits = 2), 
+                label = str_c(l2fold, "\n", sigLable, sep = ""),
+                label1 = str_c(round(fold, 2), " (", sigLable, ")", sep = ""))
+
+## write to table
+# tmp %>%
+#   dplyr::select(-label) %>%
+#   arrange(species, track, annotation) %>%
+#   fwrite("./R4.Distribution_of_enhancers/GAT_overlap/All_GAT_results_20210607.csv", 
+#          row.names = F)
+
+## Enhancers in all species
+  tmp %>%
+    dplyr::filter(str_detect(track, "(Activity|Kmeans|Zhu|Meng|Wang)", negate = T)) %>%
+    ggplot(aes(y = annotation, fill = l2fold, x = l2fold)) + 
+      geom_vline(xintercept = 0, linetype = 1, color = "grey45") +
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      facet_grid(. ~species1, space = "free") + 
+      geom_hline(yintercept = 0, linetype  = 2, color = "grey45") +
+      # scale_fill_manual(values = c(pal_npg("nrc")(10), "grey45", "grey55") %>%rev) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+      # ggtitle("Distribution of CREs according to genomic features") + 
+      # labs(caption = "Length-based") + 
+      theme(legend.key.width = unit(0.2, units = "cm"), legend.margin = margin(0, -3, 0, -9), 
+            strip.text = element_text(size = 5, face = "italic"), 
+            panel.spacing = unit(0.05, "cm"),
+            legend.position = "right") +
+      guides(fill = guide_colorbar(title = expression(log[2]^(Fold~chagne)))) +
+      scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1], 
+                           mid = brewer.pal(11, "RdYlGn")[6], 
+                           low = brewer.pal(11, "RdYlGn")[9], midpoint = 0) + 
+      scale_y_discrete(labels = function(x){str_wrap(x, width = 13)}) +
+      geom_text(aes(x = l2fold / 2, y = annotation, label = sigLable), size = 5/.pt, color = "grey15") +  #
+      # shadowtext::geom_shadowtext(aes(x = l2fold / 2, y = annotation, label = label1), 
+      #                             size = 5/.pt, color = "grey15", bg.colour='white') +
+      xlab(expression(log[2](Fold~change))) + 
+      ylab("Genomic features") +
+      scale_x_continuous(breaks = c(seq(-2, 2, by = 1)), limits = c(-2.8, 2.2))
+      
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Enrichment_Enhancers_four_species_lengthBased_fold_20210607",
+                       width = 8.2, height = 6)
+  
+
+```
+
+
+# Distribution (TSS-TTS)
+
+annotation of enhancer were based on ChipSeeker::annotatePeak(). Genome annotation was saved in TxDb object.
+
+## . prepare TxDb
+
+```{r}
+    rm(list = ls())
+    library(GenomicFeatures)
+    source("D:/SUST/code/TanYongjun_code.R")
+  # preprare TxDB (only TxDb for Hs, Dm, and A.t can download from Bioconductor.)
+    library(AnnotationDbi)
+    library(AnnotationHub)
+    library(BSgenome.Osativa.MSU.MSU7)
+    library(TxDb.Athaliana.BioMart.plantsmart28)
+    library(TxDb.Dmelanogaster.UCSC.dm3.ensGene)
+    library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+    # hub <- AnnotationHub()
+    # query(hub, c("thaliana"))
+    # query(hub, c("sativa"))
+    # query(hub, c("mays"))
+    # query(hub, c("Triticum"))
+    # 
+    # z <- hub[["AH79594"]]
+    # saveDb(z, "whatevs")
+    # z <- loadDb("whatevs")
+    
+  # rice
+    library(BSgenome.Osativa.MSU.MSU7)
+    txdbRice <- makeTxDbFromGFF("./refgenome/MSU_rice_all.gff3.gz", 
+                            chrominfo = seqinfo(BSgenome.Osativa.MSU.MSU7))
+    # saveDb(txdbRice, "./refgenome/MSU_rice_all.gff3_IRGSP1.0.TxDb")
+    
+  # # maize
+  #   txdbMaize <- makeTxDbFromGFF("./refgenome/plant_enhancer/Zea_mays.B73_RefGen_v4.50_chr1_10.gff3.gz",
+  #                                chrominfo = Seqinfo(seqnames = as.character(1:10),
+  #                                                    seqlengths = c(307041717, 244442276, 235667834, 
+  #                                                                   246994605, 223902240, 174033170, 
+  #                                                                   182381542, 181122637, 159769782, 150982314)))
+  # # wheat
+  #   txdbWheat <- makeTxDbFromGFF("./refgenome/plant_enhancer/Triticum_aestivum.IWGSC.53.gff3.gz",
+  #                                chrominfo = Seqinfo(seqnames = c(str_c(1:7, "A"), str_c(1:7, "B"), str_c(1:7, "D"), "Un") %>% sort(),
+  #                                                    seqlengths = c(594102056, 689851870, 495453186, 
+  #                                                                   780798557, 801256715, 651852609, 
+  #                                                                   750843639, 830829764, 615552423, 
+  #                                                                   744588157, 673617499, 509857067,
+  #                                                                   709773743, 713149757, 566080677,
+  #                                                                   618079260, 720988478, 473592718,
+  #                                                                   736706236, 750620385, 638686055,
+  #                                                                   480980714)))
+    
+  # merge
+    allTxDb <- list(O.sativa = txdbRice, 
+                    # Zea_mays = txdbMaize,
+                    # Triticum_aestivum = txdbWheat,
+                    A.thaliana = TxDb.Athaliana.BioMart.plantsmart28, 
+                    D.melanogaster = TxDb.Dmelanogaster.UCSC.dm3.ensGene, 
+                    H.sapiens = TxDb.Hsapiens.UCSC.hg19.knownGene)
+    
+    # Percent of genome sequence covered by gene (TSS-TTS)
+    df <- map_dfr(allTxDb, function(x){
+      c(genes(x) %>% length(), 
+        genes(x) %>% width() %>% sum(),
+        seqlengths(x) %>% sum()
+       )
+    }, .id = "Species")
+```
+
+
+## . gene density
+for D. melanogaster, only keep chr2L, chr2R, chr3L, chr3R, chr4, and chrX.
+
+```{r}
+gene_ls <- map_dfr(allTxDb, function(x){
+  genes(x) %>%
+    as.data.frame() %>%
+    dplyr::filter(str_detect(seqnames, "Het|extra|chrU|chrM|Sy|Un|Pt|random|hap|chrY", negate = T))
+}, .id = "species")
+
+unique(gene_ls$seqnames) %>%sort()
+gene_num <- gene_ls %>%
+  group_by(species) %>%
+  dplyr::summarise(NumGene = n())
+
+g_size <- map_dfr(allTxDb, function(x){
+  tmp <- seqlengths(x)
+  data.frame(seqnames = names(tmp), 
+             SeqLen = tmp) %>%
+    dplyr::filter(str_detect(seqnames, "Het|extra|chrU|chrM|Sy|Un|Pt|random|hap|chrY", negate = T)) %>%
+    return()
+}, .id = "species") %>%
+  group_by(species) %>%
+  dplyr::summarise(g_size = sum(SeqLen)/1e6)
+
+gene_num %>%
+  left_join(., g_size) %>%
+  dplyr::mutate(Density = NumGene/g_size) %>%
+  dplyr::mutate(species = factor(species, levels = toolkit_tyj$AtEn_species_level)) %>%
+  arrange(species) %>%
+  ggplot(aes(x = species, y = Density, fill = species)) + 
+    geom_col(alpha = 5/6) + 
+    toolkit_tyj$theme_my + 
+    geom_text(aes(x = species, y = Density + 30,
+                  label = round(Density, digits = 2)),
+              angle = 90,
+              size = 6/.pt) +
+    scale_fill_manual(values = toolkit_tyj$AtEn_species_color) +
+    ylab("Number of genes per Mb") +
+    # xlab("Species") +
+    theme(axis.text.x = element_text(face = "italic", angle = 45, hjust = 1, vjust = 1),
+          legend.position = "none",
+          axis.title.x = element_blank()
+          # axis.text.y = element_text(angle = 90, hjust = 0.5, vjust = -1)
+          ) +
+    scale_y_continuous(expand = expansion(add = c(10, 40)))
+
+toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Gene_density_four_species",
+                         width = 2.5, height = 6.57)
+
+```
+
+
+
+## . Annotate
+based on the center of enhancer.
+
+```{r}
+  # load
+  source("D:/SUST/code/TanYongjun_code.R")
+  map(allTxDb, seqlengths)
+  en_all <- read_rds("./R12_otherspecies/Enhancer_in_six_species.rds") %>%
+    dplyr::filter(str_detect(method, "STARR")) %>%
+    split(., .$ID) %>%
+    map(., makeGRangesFromDataFrame)
+
+  table(en_all$ID)
+  names(en_all)
+  names(allTxDb) %>% sort()
+  
+  # prepare random (because gene number, genome length and gene length varied in four species)
+  rd_all <- list()
+  for (i in 1:5) {
+    for (j in names(en_all)) {
+      id <- str_c(j, i, sep = "_")
+      rd_all[[id]] <- toolkit_tyj$shuffle(en_all[[j]], TxDb = allTxDb[[j]], RandomSeed = i)
+    }
+  }
+  
+  # annotatePeak() error reported when use furrr.
+  en_anno <- map(names(en_all), function(x){
+    # options(ChIPseeker.downstreamDistance = 1000) # this option just affect name of label used in "peakanno@annoStat", but did not affect the feature definition.
+    options(verbose = F)
+    en_all[[x]] %>%
+      GenomicRanges::resize(width = 1, fix = "center") %>%
+      ChIPseeker::annotatePeak(., tssRegion = c(-500, 0), 
+                               TxDb = allTxDb[[x]], verbose = F, overlap = "all")
+  })
+  names(en_anno) <- names(en_all)
+  
+  rd_anno <- map(names(rd_all), function(x){
+    options(verbose = F)
+    x_id <- str_replace_all(x, "_\\d", "")
+    rd_all[[x]] %>%
+      GenomicRanges::resize(width = 1, fix = "center") %>%
+      ChIPseeker::annotatePeak(., tssRegion = c(-500, 0), 
+                               TxDb = allTxDb[[x_id]], verbose = F, overlap = "all")
+  })
+  names(rd_anno) <- names(rd_all)
+  
+```
+
+## . Distance to TSS
+
+### . with random
+```{r}
+  en_annoDF <- en_anno %>%
+    map_dfr(., function(x){
+      as.data.frame(x) %>%
+        dplyr::select(seqnames:end, distanceToTSS)
+    }, .id = "species") %>%
+    dplyr::mutate(species = factor(species, levels = toolkit_tyj$AtEn_species_level),
+                  Type = "Enhancer") 
+  
+  rd_annoDF <- rd_anno %>%
+    map_dfr(., function(x){
+      as.data.frame(x) %>%
+        dplyr::select(seqnames:end, distanceToTSS)
+    }, .id = "species") %>%
+    dplyr::mutate(species = str_replace_all(species, "_\\d", ""),
+                  species = factor(species, levels = toolkit_tyj$AtEn_species_level),
+                  Type = "Random") 
+
+  # plot distance to TSS
+  options(scipen = 100)
+  label_tmp <- rbind(en_annoDF, rd_annoDF) %>%
+    group_by(species, Type) %>%
+    dplyr::summarise(Median = median(distanceToTSS))
+  
+  rbind(en_annoDF, rd_annoDF) %>%
+    ggplot(aes(x = abs(distanceToTSS), color = species)) +
+      # geom_histogram() + 
+      geom_density(size = 0.5, aes(linetype = Type)) +
+      # facet_wrap("species") +
+      toolkit_tyj$theme_my +
+      geom_vline(xintercept = 0, linetype = 2, color = "grey45") + 
+      theme(legend.position = c(0.8, 0.8),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.text = element_text(size = 5, face = "italic"), 
+            panel.spacing = unit(0.03, "cm"),
+            legend.title = element_blank(),
+            legend.spacing = unit(0, "cm"),
+            legend.box.spacing = unit(0, "cm")) + 
+      xlab("Distance to TSS of nearest gene") + 
+      ylab("Kernel density") +
+      # scale_fill_npg(alpha = 0.3) +
+      scale_color_manual(values = toolkit_tyj$AtEn_species_color) +
+      scale_x_log10() #+
+      # geom_text(aes(x = Median, label = Median, y = seq(1, 0.7, by = -0.1), color = species), 
+      #           data = label_tmp, check_overlap = F,
+      #           size = 6/.pt)
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Distance_to_nearest_gene_of_enhancer_four_species_addRandom",
+                       width = 6, height = 6)
+
+```
+
+### .without random
+```{r}
+  en_annoDF <- en_anno %>%
+    map_dfr(., function(x){
+      as.data.frame(x) %>%
+        dplyr::select(seqnames:end, distanceToTSS)
+    }, .id = "species") %>%
+    dplyr::mutate(species = factor(species, levels = toolkit_tyj$AtEn_species_level),
+                  Type = "Enhancer") 
+
+  # plot distance to TSS
+  options(scipen = 100)
+  label_tmp <- en_annoDF %>%
+    group_by(species) %>%
+    dplyr::summarise(Median = median(distanceToTSS))
+  vline_tmp <- label_tmp %>%
+    dplyr::mutate()
+  
+  en_annoDF %>%
+    ggplot(aes(x = abs(distanceToTSS), color = species, fill = species)) +
+      # geom_histogram() + 
+      geom_density(size = 0.5, alpha = 0.3) +
+      # facet_wrap("species") +
+      toolkit_tyj$theme_my +
+      geom_vline(data = label_tmp, aes(xintercept = Median, color = species),
+                 linetype = 2, size = 0.3) +
+      theme(legend.position = c(0.8, 0.8),
+            legend.key.size = unit(0.3, units = "cm"),
+            legend.text = element_text(size = 5, face = "italic"), 
+            panel.spacing = unit(0.03, "cm"),
+            legend.title = element_blank()) + 
+      xlab("Distance to TSS of nearest gene") + 
+      ylab("Kernel density") +
+      scale_fill_manual(values = toolkit_tyj$AtEn_species_color) +
+      scale_color_manual(values = toolkit_tyj$AtEn_species_color) +
+      scale_x_log10() +
+      geom_text(aes(x = Median, label = Median, y = seq(1, 0.7, by = -0.1), color = species),
+                data = label_tmp, check_overlap = F,
+                size = 6/.pt)
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Distance_to_nearest_gene_of_enhancer_four_species_Median",
+                       width = 6, height = 6)
+  
+  # multicomparison 
+  toolkit_tyj$MultiComparison2(en_annoDF, Name_variable1 = NA, Name_variable2 = "species",
+                               Name_value = "distanceToTSS", test.name = "kruskal", label.sigLevel = 0.01)
+```
+## . TSS2TTS
+
+```{r}
+  en_annoDF <- en_anno %>%
+    map_dfr(., as.data.frame, .id = "species") %>%
+    toolkit_tyj$relativeBins2TSS(flank.region = 5000, bins_flank = 50, bins_gene = 50, flank_scale = 1) %>%
+    dplyr::mutate(Type = "Enhancer")
+  
+  rd_annoDF <- rd_anno %>%
+    map_dfr(., as.data.frame, .id = "species") %>%
+    toolkit_tyj$relativeBins2TSS(flank.region = 5000, bins_flank = 50, bins_gene = 50, flank_scale = 1) %>%
+    dplyr::mutate(Type = "Random", species = str_replace_all(species, "_\\d", ""))
+  
+# summary (NA means cre located larger than `flank.region` away from gene body).
+  rbind(en_annoDF, rd_annoDF) %>%
+    group_by(species, Type) %>%
+    dplyr::summarise(MissRate = mean(is.na(relativeBins)))
+    
+# normalized to random
+  ScaleFun <- function(x){
+    as.numeric(x) %>% scale() %>% as.vector() %>% return()
+  }
+  df <- rbind(en_annoDF, rd_annoDF) %>%
+    dplyr::select(species, Type, relativeBins) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, Type, species) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = c(relativeBins, species), names_from = Type, 
+                values_from = Num, values_fill = 0) %>%
+    group_by(species) %>%
+    dplyr::mutate(Enhancer = ScaleFun(Enhancer),
+                  Random = ScaleFun(Random),
+                  EnhancerNorm = Enhancer - Random) %>%
+    pivot_longer(cols = c(Enhancer, Random,EnhancerNorm), names_to = "Type", values_to = "Density") %>%
+    dplyr::mutate(species = factor(species, levels = toolkit_tyj$AtEn_species_level))
+  
+#plot unNormed
+  library(ggformula)
+  df %>%
+    dplyr::filter(str_detect(Type, "EnhancerNorm", negate = T)) %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -1.6, ymax = -1.2, fill = "grey80") +
+      geom_text(x = 25, y = -1.4, label = "Gene body", size = 5/.pt, color = "grey30",
+                check_overlap = T) +
+      geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      # geom_line() +
+      geom_spline(aes(x = relativeBins, color = species, y = Density, linetype = Type),
+                  alpha = 4/5) +
+      # scale_color_npg() +
+      scale_color_manual(values = toolkit_tyj$AtEn_species_color) +
+      # scale_linetype_manual(values = c(1,2,2,2,2)) +
+      facet_wrap("species") +
+      # facet_grid(species ~ Type) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          # legend.position = c(0.83, 0.22),
+          legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          panel.spacing = unit(0.1, "cm"),
+          legend.key.height = unit(0.25, units = "cm"),
+          strip.text = element_text(face = "italic")) 
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Enhancer_distribution_TTS_TSS_four_species_Unnormed_20220525",
+                       width = 8, height = 6)
+
+#plot Normed
+  library(ggformula)
+  df %>%
+    dplyr::filter(str_detect(Type, "EnhancerNorm", negate = F)) %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.2, ymax = -2.8, fill = "grey80") +
+      geom_text(x = 25, y = -3, label = "Gene body", size = 5/.pt, color = "grey30",
+                check_overlap = T) +
+      geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      # geom_line() +
+      geom_spline(aes(x = relativeBins, color = species, y = Density, linetype = Type),
+                  alpha = 4/5) +
+      scale_color_manual(values = toolkit_tyj$AtEn_species_color) +
+      # scale_color_npg() +
+      # scale_linetype_manual(values = c(1,2,2,2,2)) +
+      facet_wrap("species") +
+      # facet_grid(species ~ Type) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          # legend.position = c(0.83, 0.22),
+          legend.position = "none",
+          panel.spacing = unit(0.1, "cm"),
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          legend.key.height = unit(0.25, units = "cm"),
+          strip.text = element_text(face = "italic")) 
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R12_otherspecies/Enhancer_distribution_TTS_TSS_four_species_normed_20220525",
+                       width = 8, height = 6)
+```
+
+
+# TS/HK genes
+Did enhancer flanking genes more enriched in HK genes?
+
+
+
+```{r}
+
+SampleSize <- c(1,2,3,4,5,6,4)
+sample_size <- c(1,2,3,4,5,6,4)
+
+sample_size = c(1,2,3,4,5,6,4)
+
+sample_tran <- log10(sample_size, base = exp(e))
+
+# CRAN
+install.packages("ggplot2")
+
+
+# Bioconductor
+BiocManager::install("Chipseeker")
+
+
+# Github
+installr::install.github("statsmaths/hbase")
+
+
+# loading package
+library("ggplot2")
+mutate()
+dplyr::mutate()
+
+```
+

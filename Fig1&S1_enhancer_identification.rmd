@@ -1,0 +1,993 @@
+---
+title: "Fig2&S2"
+author: "TYJ"
+date: '2022-05-18'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, background="transparent", fig.align='center' }
+knitr::opts_chunk$set(echo = F, include = T, highlight = T, warning = F, fig.align = "c")
+options(knitr.kable.NA = '')
+library(pheatmap)
+library(grid)
+library(data.table)
+library(GenomicRanges)
+library(tidyverse)
+source("D:/SUST/code/TanYongjun_code.R")
+```
+
+# correlation among bams
+
+## .1 calculation
+
+`/scratch/2021-04-10/bioTanyj/At_enhancer/scripts/1.2_CorrelationBetweenBamFiles.lsf`
+
+## .2 plot
+
+binSize = 600bp
+
+```{r}
+source("D:/SUST/code/TanYongjun_code.R")
+df <- fread("./R1.library_summary/bam_correlation/Bam_files_PearsonCorr_readCounts_600bpbin.tab")
+df$V1 <- NULL
+
+row.names(df) <- c("plasmid-1", "plasmid-2", "cDNA-1", "cDNA-2")
+colnames(df) <- c("plasmid-1", "plasmid-2", "cDNA-1", "cDNA-2")
+
+p <- pheatmap::pheatmap(df, 
+         cluster_rows = F, cluster_cols = F, 
+         display_numbers = T, number_color = "grey20", 
+         angle_col = 45, number_format = "%.4f", 
+         fontsize = 6)
+toolkit_tyj$SavePlot(filename_prefix = "./R1.library_summary/bam_correlation/R1_Heatmap_PearsonCorr_600bpbin",
+                     plot = p, device = c("png", "pdf"),
+                     width = 7, height = 6)
+```
+
+# number of En identified in Merge/rep1/rep2
+```{r}
+rm(list=ls())
+source("D:/SUST/code/TanYongjun_code.R")
+en_1.2 <- fread("./R2.enhancer_calling/All_raw_enhancers_20210307.csv") %>%
+  dplyr::filter(enrichment > 1.3, sampleCov < 2700, controlCov < 2700,
+                str_detect(ID, "cEnhancer.+strategy1"))
+
+en_1.2 %>%
+  dplyr::mutate(Type = ifelse(seqnames == "chrM", "chrM", "non-chrM")) %>%
+  count(rep, Type)
+```
+
+
+# Overlap among Merge/Rep1/Rep2 
+
+## with ChrMT (not used)
+
+```{r 20210415}
+rm(list = ls())
+source("D:/SUST/code/TanYongjun_code.R")
+en_1.2 <- fread("./R2.enhancer_calling/All_raw_enhancers_20210307.csv") %>%
+  dplyr::filter(enrichment > 1.3, sampleCov < 2700, controlCov < 2700,
+                str_detect(ID, "cEnhancer.+strategy1")) %>%
+  split(.$ID) %>%
+  map(., GenomicRanges::makeGRangesFromDataFrame, keep.extra.columns = T)
+
+names(en_1.2)
+
+map(en_1.2, length)
+
+# overlap between dataset
+  df <- combn(names(en_1.2), m = 2) %>% t() %>% as.data.frame()
+  df$Num_1 <- df$Num_2 <- df$Num_ov <- NULL
+  for (i in 1:nrow(df)) {
+    cat(i, " ")
+    tmp1 <- en_1.2[[df$V1[i]]]
+    tmp2 <- en_1.2[[df$V2[i]]]
+    ol <- findOverlaps(tmp1, tmp2, minoverlap = 300)
+    df$Num_1[i] <- length(tmp1)
+    df$Num_2[i] <- length(tmp2)
+    df$Num_ov[i] <- length(unique(ol@from)) # number of overlapped regions
+  }
+  # Enhancers identified both in Rep1, Rep2, and Merge.
+  OlThreeSets <- en_1.2 %>% 
+    purrr::reduce(., c) %>%
+    GenomicRanges::reduce() %>%
+    as_tibble() %>%
+    dplyr::filter(width > 600) %>%
+    nrow()
+  df <- rbind(df, c("cEnhancer_Merge_strategy1", "cEnhancer_rep1&2_strategy1", 1, 1, OlThreeSets))
+  df <- df %>%
+    dplyr::mutate(across(.cols = matches("Num.+"), .fns = as.numeric))
+df$Percent_1 <- df$Num_ov / df$Num_1
+df$Percent_2 <- df$Num_ov / df$Num_2
+
+df <- df %>%
+  separate(V1, into = c("Type_1", "rep_1", "Strategy_1", sep = "_")) %>%
+  separate(V2, into = c("Type_2", "rep_2", "Strategy_2", sep = "_")) 
+
+df %>%
+  dplyr::filter(Strategy_1 == "strategy1", Strategy_2 == "strategy1",
+                Type_1 == "cEnhancer", Type_2 == "cEnhancer") %>%
+  fwrite("./R2.enhancer_calling/Overlap_among_cSTARRseq_merge_replicates_20220807.csv")
+
+```
+
+## no ChrMT
+
+```{r 20220922}
+rm(list = ls())
+source("D:/SUST/code/TanYongjun_code.R")
+en_1.2 <- fread("./R2.enhancer_calling/All_raw_enhancers_20210307.csv") %>%
+  dplyr::filter(enrichment > 1.3, sampleCov < 2700, controlCov < 2700,
+                str_detect(ID, "cEnhancer.+strategy1"),
+                str_detect(seqnames, "C|M", negate = T)) %>%
+  split(.$ID) %>%
+  map(., GenomicRanges::makeGRangesFromDataFrame, keep.extra.columns = T)
+
+names(en_1.2)
+
+map(en_1.2, length)
+
+# overlap between dataset
+  df <- combn(names(en_1.2), m = 2) %>% t() %>% as.data.frame()
+  df$Num_1 <- df$Num_2 <- df$Num_ov <- NULL
+  for (i in 1:nrow(df)) {
+    cat(i, " ")
+    tmp1 <- en_1.2[[df$V1[i]]]
+    tmp2 <- en_1.2[[df$V2[i]]]
+    ol <- findOverlaps(tmp1, tmp2, minoverlap = 300)
+    df$Num_1[i] <- length(tmp1)
+    df$Num_2[i] <- length(tmp2)
+    df$Num_ov[i] <- length(unique(ol@from)) # number of overlapped regions
+  }
+  
+  # Enhancers identified in all of Rep1, Rep2, and Merge.
+  ol <- findOverlaps(en_1.2$cEnhancer_rep1_strategy1, en_1.2$cEnhancer_rep2_strategy1, minoverlap = 300)
+  en_tmp <- en_1.2$cEnhancer_rep1_strategy1[unique(ol@from)]
+  ol <- findOverlaps(en_tmp, en_1.2$cEnhancer_merge_strategy1, minoverlap = 300)
+  OlThreeSets <- unique(ol@from) %>%length()
+  
+  df <- rbind(df, c("cEnhancer_Merge_strategy1", "cEnhancer_rep1&2_strategy1", 1, 1, OlThreeSets))
+  df <- df %>%
+    dplyr::mutate(across(.cols = matches("Num.+"), .fns = as.numeric))
+df$Percent_1 <- df$Num_ov / df$Num_1
+df$Percent_2 <- df$Num_ov / df$Num_2
+
+df <- df %>%
+  separate(V1, into = c("Type_1", "rep_1", "Strategy_1", sep = "_")) %>%
+  separate(V2, into = c("Type_2", "rep_2", "Strategy_2", sep = "_")) 
+
+df %>%
+  # dplyr::filter(Strategy_1 == "strategy1", Strategy_2 == "strategy1",
+  #               Type_1 == "cEnhancer", Type_2 == "cEnhancer") %>%
+  fwrite("./R2.enhancer_calling/Overlap_among_cSTARRseq_merge_replicates_noChrCM_20220922.csv")
+
+```
+
+
+# correlation between enhancer activity in two replicates.
+Correlation between activity of all enhancers estimated in replicate1 and replicate2.
+Nearly all enhancers identified using merged data can be found in unfilted enhancers identified in replicate1 and replicate2.
+
+```{r}
+  ## load
+    rm(list = ls())
+    load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+    source("D:/SUST/code/TanYongjun_code.R")
+    
+    cEnhancerFilt <- enhancer %>%
+      dplyr::filter(ID == "cSTARR-seq") %>%
+      dplyr::mutate(seqnames = str_c("chr", seqnames),
+                    seqnames = str_replace_all(seqnames, "chrMt", "chrM")) %>%
+      makeGRangesFromDataFrame()
+    
+    # collect raw enhancers
+    en_raw <- list()
+    for (i in list.files(path = "./R2.enhancer_calling/", pattern = ".Enhancer.+raw.tsv", recursive = T)) {
+      id <- str_replace_all(i, ".+/(.+)_raw.tsv", "\\1") %>% str_replace_all(., "Extended", "")
+      en_raw[[id]] <- fread(file = paste("./R2.enhancer_calling/", i, sep = ""), header = T) %>%
+        mutate(method = ifelse(str_detect(id, "iEnhancer"),"iSTARR-seq", "cSTARR-seq"), 
+               ID = id, id = id) %>%
+        separate(id, c("Type", "rep", "Strategy"))
+    }
+    en_raw <- en_raw[str_detect(names(en_raw), "cEnhancer_rep.+strategy1")]
+    
+  ## overlap among enhancer set
+    names(en_raw)
+    Ol_rep1 <- findOverlaps(cEnhancerFilt, 
+                            makeGRangesFromDataFrame(en_raw$cEnhancer_rep1_strategy1)) %>%
+      as_tibble %>%
+      dplyr::rename(Merge = queryHits, Rep1 = subjectHits)
+    
+    Ol_rep2 <- findOverlaps(cEnhancerFilt, 
+                            makeGRangesFromDataFrame(en_raw$cEnhancer_rep2_strategy1)) %>%
+      as_tibble %>%
+      dplyr::rename(Merge = queryHits, Rep2 = subjectHits)
+    ol <- full_join(Ol_rep1, Ol_rep2)
+    length(unique(ol$Merge))
+    
+    EnActReps <- data.frame(Rep1 = en_raw$cEnhancer_rep1_strategy1$enrichment[ol$Rep1],
+                            Rep2 = en_raw$cEnhancer_rep2_strategy1$enrichment[ol$Rep2])
+    cor(EnActReps$Rep1, EnActReps$Rep2, use = "pairwise.complete.obs")
+    p <- EnActReps %>%
+      ggplot(aes(x = Rep1, y = Rep2)) + 
+        # geom_point(alpha = 1/3) + 
+          geom_text(x = 3, y = 5.8, label = expression(italic(r)=="0.9480"~~n=="4327"),
+                    size = 6/.pt, check_overlap = T) +
+        ggrastr::geom_point_rast(alpha = 1/2, raster.dpi = 300, pch = 1, size = 0.5) +
+        # geom_smooth(method = 'lm', formula = y ~ x, size = 0.4) +
+        # scale_y_log10() +
+        # scale_x_log10() +
+        xlab("Enhancer activity (rep 1)") + 
+        ylab("Enhancer activity (rep 2)") +
+        scale_x_continuous(breaks = 1:6) + 
+        scale_y_continuous(breaks = 1:6) +
+        coord_cartesian(xlim = c(1, 7), ylim = c(1, 6)) +
+        # ggtitle("Correlation between enhancer enrichment \nidentified in two replictes") + 
+        toolkit_tyj$theme_my
+
+    toolkit_tyj$SavePlot(filename_prefix = "./R2.enhancer_calling/Correlation_between_replicates_all_enhancers_identified_in_Merge_1",
+                     width = 4, height = 4, device = c("pdf", "png"), plot = p)
+    
+  # no regression line.
+    p <- EnActReps %>%
+      ggplot(aes(x = Rep1, y = Rep2)) + 
+        # geom_point(alpha = 1/3) + 
+          geom_text(x = 3, y = 5.8, label = expression(italic(r)=="0.9480"~~n=="4327"),
+                    size = 6/.pt, check_overlap = T) +
+        ggrastr::geom_point_rast(alpha = 1/2, raster.dpi = 300, pch = 1, size = 0.5) +
+        # geom_smooth(method = 'lm', formula = y ~ x, size = 0.4) +
+        # scale_y_log10() +
+        # scale_x_log10() +
+        xlab("Enhancer activity (rep 1)") + 
+        ylab("Enhancer activity (rep 2)") +
+        scale_x_continuous(breaks = 1:6) + 
+        scale_y_continuous(breaks = 1:6) +
+        coord_cartesian(xlim = c(1, 7), ylim = c(1, 6)) +
+        # ggtitle("Correlation between enhancer enrichment \nidentified in two replictes") + 
+        toolkit_tyj$theme_my
+
+    toolkit_tyj$SavePlot(filename_prefix = "./R2.enhancer_calling/Correlation_between_replicates_all_enhancers_identified_in_Merge_1",
+                     width = 4, height = 4, device = c("pdf", "png"), plot = p)
+    NA
+```
+
+
+
+
+# GC bins coverage
+
+## .1 calculate 
+
+`/scratch/2022-05-21/bioTanyj/At_enhancer/scripts/old_scripts_20210908/1.3.5.1_GC_coverage_calculate_20200415.lsf`
+
+
+## .2 plot
+run on TaiYi
+`/scratch/2022-05-21/bioTanyj/At_enhancer/scripts/old_scripts_20210908/1.3.5.2_GC_coverage_plot_modified_facet.r`
+
+```{r}
+
+setwd("/scratch/2022-05-21/bioTanyj/At_enhancer/R1.library_summary/GC_coverage")
+source("/work/bio-tanyj/scripts/TanYongjun_code.R", echo = F)
+
+# the input bed file was slimmed and only contain two columns (GC% and depth).
+
+
+#function for the 10th ,90th percent
+bp.vals <- function(x, probs=c(0.1, 0.25, 0.5, 0.75, 0.9)) {
+  r <- quantile(x, probs = probs, na.rm = TRUE)
+  names(r) <- c("ymin", "lower", "middle", "upper", "ymax")
+  r
+}
+
+df <- NULL
+for(i in list.files(pattern = ".+coverage_slim_thin10.bed")){
+  id <- str_replace_all(i, "RAtEn(W.\\d)_no_repeat_GC_10bin_coverage_slim_thin10.bed", "\\1") %>%
+            str_replace_all(., c("WC1" = "cDNA-1",
+                                  "WC2" = "cDNA-2",
+                                  "WP1" = "plasmid-1",
+                                  "WP2" = "plasmid-2"))
+  df <- fread(i, data.table = F) %>%
+    dplyr::mutate(id = id) %>%
+    rbind(., df)
+}
+colnames(df) <- c("ratio", "depth", "id")
+df$id <- factor(df$id, levels = c("plasmid-1", "plasmid-2", "cDNA-1", "cDNA-2"))
+
+# add column "bin". Rvised by Tanyongjun 2021.04.22
+  cat("\n Dividing into bins.........")
+  bin <- seq(0.05,0.95,0.05)
+  df$bin <- cut(df$ratio, breaks = bin)
+  subCov <- na.omit(df)
+  cat("  Completed! \n")
+
+# calculate the median depth in each bin (raw depth range from quantile 0.1 to 0.9). revised - TYJ 2020.04.22
+	#   MeanVec <- NULL # median depth
+	#   for (i in unique(subCov$bin)) {
+	#     tmpCov <- subCov[which(subCov$bin == i), ]
+	#     confCov <- tmpCov %>% 
+	#        filter (tmpCov$depth > quantile(tmpCov$depth, 0.1) & tmpCov$depth < quantile(tmpCov$depth, 0.9))
+	#     tmpMean <- mean(confCov$depth)
+	#     MeanVec <- append(MeanVec, tmpMean)
+	#   }
+	#   CovMean <- data.frame(bin = unique(subCov$bin), mean = MeanVec)
+
+# calculate median
+  cat("Calculating the median depth of each bin........")
+  CovMedian <- subCov %>%
+               group_by(bin) %>%
+               summarise(Median = median(depth, na.rm = T))
+#   write.table(CovMedian, paste(cell,"_",name,"_no_repeat_GC_10bin_coverage_median.xls", sep=""),
+#               quote = F, col.names = T, row.names = F, sep = "\t")
+  cat("   Completed!\n")
+# plot in ggplot2
+
+  cat("Plotting...........")
+#   p <- ggplot(subCov ,aes(x=bin,y=depth))+
+#       stat_summary(fun.data=bp.vals,geom = "boxplot", 
+#                     outlier.shape = NA,position=position_dodge(width=1.5), size=0.5)+
+#       stat_smooth(data=CovMedian ,aes(x=bin,y=Median),span=0.75,color="#1F497D",
+#             size=1.5,se=FALSE)+
+#       labs(y="Read depth",x="GC-contentbins", title=paste(cell,name,"GC-content",sep=" "))+ 
+#       scale_x_discrete(unique(subCov$bin)[c(1, 20, 40, 60, 80, 100)],
+# 	                   labels= unique(subCov$bin)[c(1, 20, 40, 60, 80, 100)])+
+#       theme(panel.background=element_rect(fill='transparent',  color='NA'),panel.grid =element_blank())+
+#       toolkit_tyj$theme_my + 
+#       theme(axis.text.x = element_text(angle=90, hjust=1,  size = 8))
+
+p <- ggplot(subCov, aes(x = bin, y = depth)) +
+       geom_boxplot(outlier.shape = NA, size = 0.35, fill = "transparent") +
+      #  geom_violin(fill = "transparent") + # very bad, becuse some outlier with ultra-high sequence depth exist.
+       facet_wrap("id") +
+       geom_smooth(data = CovMedian, aes(x = bin,y = Median), span = 0.65,
+           color = "#1F497D", size = 1.5, se = FALSE) +
+       toolkit_tyj$theme_my +
+       labs(y = "Read depth", x = "GC-content bins") +
+       scale_x_discrete(breaks = c("(0.2,0.25]", "(0.3,0.35]", "(0.4,0.45]", "(0.5,0.55]", "(0.6,0.65]", "(0.7,0.75]", "(0.8,0.85]", "(0.9,0.95]"),
+                        labels = c(0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)) +
+       coord_cartesian(ylim = c(0, max(CovMedian$Median) * 3.1))
+  
+toolkit_tyj$SavePlot(filename_prefix = "Coverage_in_each_GC_bins_20220526", width = 8, height = 6, plot = p)
+
+  cat("completed!\n")
+
+```
+
+
+# Fragments length
+`/scratch/2022-05-21/bioTanyj/At_enhancer/scripts/old_scripts_20210908/1.3.2_FragementsLengthDistribution_facet.R`
+
+```{r}
+rm(list = ls())
+source("/work/bio-tanyj/scripts/TanYongjun_code.R", echo = F)
+setwd("/scratch/2022-05-21/bioTanyj/At_enhancer/R2.enhancer_calling/cSTARR-seq")
+df <- NULL
+for(i in list.files(path = "./", pattern = ".+\\d_add40.+.bed.gz")){
+  id <- str_replace_all(i, ".+(W.\\d)_add.+", "\\1") %>%
+            str_replace_all(., c("WC1" = "cDNA-1",
+                                            "WC2" = "cDNA-2",
+                                            "WP1" = "plasmid-1",
+                                            "WP2" = "plasmid-2"))
+  cat(id,"\n")
+  df <-  fread(input = i, sep = "\t", 
+                   data.table = F, colClasses = c("character", "numeric", "numeric", "character")) %>%
+                   dplyr::mutate(width = V3 - V2 + 1, id = id) %>%
+              dplyr::select(width, id) %>%
+              # slice_sample(prop = 0.1) %>%
+              rbind(., df) 
+}
+df$id <- factor(df$id, levels = c("plasmid-1", "plasmid-2", "cDNA-1", "cDNA-2"))
+
+p <- ggplot(aes(x = width), data = df) + 
+        geom_histogram(bins = 50) + 
+        toolkit_tyj$theme_my +
+        xlab(label = "Fragment length (bp)") + 
+        ylab(label = expression("Numer of fragments")) +
+        facet_wrap("id", ncol = 2) +
+        scale_x_continuous(breaks = seq(0, 1250, by = 250), limits = c(0, 1300))
+
+toolkit_tyj$SavePlot("Length_distribution_facet_20220525",
+                    width = 8, height = 6, units = "cm")
+
+```
+
+
+# Cumulative coverage
+
+## Step 1, calculate depth of each base pair.\
+`/scratch/2021-03-02/bioTanyj/At_enhancer/scripts/1.3.3_CoverageNoRepeatRegion.lsf`
+
+## Step 2, plot in R.
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  depth.all <- NULL
+  for (i in list.files(pattern = ".merge.coverage_RefNoRepeat.tmp.txt", 
+                       path = "./R1.library_summary/CumulativeCoverage/")) {
+    temp <- fread(file = paste("./R1.library_summary/CumulativeCoverage/", i, sep = ""), 
+                  sep = "\t", header = F, data.table = F)
+    names(temp) <- c("Depth", "Counts")
+    temp$Method <- str_replace_all(i, "(.+?)_(.+)\\.merge.co.+", "\\1")
+    temp$sample <- str_replace_all(i, "(.+?)_(.+)\\.merge.co.+", "\\2")
+    temp$temp <- temp$Depth * temp$Counts
+    temp <- plyr::arrange(temp, -Depth)
+    temp$Percent <- temp$Counts / sum(temp$Counts)
+    temp$Percent <- cumsum(temp$Percent)
+    depth.all <- rbind(depth.all, temp)
+  }
+  
+
+  library(ggformula)
+  df <- depth.all %>%
+    dplyr::filter(Method == "cSTARRseq", 
+                  sample != "C", 
+                  sample != "P") %>%
+    mutate(Replicate = ifelse(str_detect(sample, ".+1$"), "replicate1", "replicate2"),
+           Sample = str_replace_all(sample, c("C1" = "cDNA-1", 
+                                              "C2" = "cDNA-2",
+                                              "P1" = "plasmid-1",
+                                              "P2" = "plasmid-2")),
+           Sample = factor(Sample, levels = c("plasmid-1", "plasmid-2", "cDNA-1", "cDNA-2"))) 
+  df_lab <- df%>%
+    dplyr::filter(Depth == 1 | Depth == 10) %>%
+    group_by(Sample) %>%
+    dplyr::mutate(labeltmp = str_c(Depth, "X ", scales::percent(Percent, 0.01))) %>%
+    arrange(Depth) %>%
+    dplyr::summarise(label = str_c(labeltmp, collapse = "\n"))
+    
+  df %>%
+    ggplot(aes(x = Depth, y = Percent)) + 
+      geom_col(color = "grey50", fill = "grey50") +
+      # geom_spline() +
+      facet_wrap("Sample") +
+      ylab("Percentage of genome (non-repeatative region)") +
+      xlim(1, 200) + 
+      toolkit_tyj$theme_my + 
+      scale_y_continuous(breaks = seq(0, 1, by = 0.2), labels = scales::percent) + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) + 
+      geom_text(data = df_lab, aes(x = 165, y = 0.8, label = label), size = 5/.pt)
+      
+  toolkit_tyj$SavePlot(filename_prefix = "./R1.library_summary/CumulativeCoverage/Cumulative_coverage_in_no-repeated_region_cSTARRseq",
+                       width = 8, height = 6, device = c("png", "pdf"))
+  rm(temp, i, j, p, df)
+```
+
+# Cov in each genomic features
+
+## .1 calculate
+copy from .4 of `1.3`
+
+## .2 plot
+```{r, eval=F}
+source("D:/SUST/code/TanYongjun_code.R")
+regionCov <- fread("./R1.library_summary/Cov_genomic_features/genomic_regions_coverage_each_replicates.csv.gz") %>%
+  dplyr::filter(str_detect(id, "iSTARRseq", negate = T))
+head(regionCov)
+regionCov <- regionCov %>%
+  mutate(Type = "All", 
+         Replicates = ifelse(str_detect(id, ".+1.bed"), "replicate1", "replicate2"),
+         library = ifelse(str_detect(id, "_P\\d.+"), "plasmid", "cDNA"),
+         Method = str_replace_all(id, ".+(cSTARRseq|iSTARRseq).+", "\\1"),
+         genomic_regions = str_replace_all(id, "(.+)_(cSTARRseq|iSTARRseq).+", "\\1")) 
+
+regionCov$Type[str_detect(regionCov$id, "_PAS")] <- "PAS"
+regionCov$Type[str_detect(regionCov$id, "_noPAS")] <- "noPAS"
+regionCov$genomic_regions <- str_replace_all(regionCov$genomic_regions, "_(PAS|noPAS)", "")
+regionCov <- regionCov %>%
+  # dplyr::filter(genomic_regions != "repeat_region") %>%
+  mutate(genomic_regions = str_replace_all(genomic_regions, 
+                                           c("first_intron" = "1st intron", 
+                                             "five_UTR" = "5' UTR", 
+                                             "intergenic" = "Intergenic", 
+                                             "other_intron" = "Other introns", 
+                                             "promoter_200bp" = "200bp upstream TSS", 
+                                             "promoter_core" = "+/- 50bp TSS", 
+                                             "repeat_region" = "Repeat region",
+                                             "three_UTR" = "3' UTR"))) %>%
+  mutate(genomic_regions = factor(genomic_regions, 
+                                  levels = c("200bp upstream TSS", 
+                                             "+/- 50bp TSS",
+                                             "5' UTR",
+                                             "1st intron",
+                                             "CDS",
+                                             "Other introns",
+                                             "3' UTR",
+                                             "Intergenic",
+                                             "Repeat region"
+                                             )))
+# plot
+# quantile(regionCov$coverage, probs = seq(0, 1, by = 0.1))
+
+# Genomic regions (cSTARRseq each replicates)
+p <- regionCov %>%
+  dplyr::filter(Type == "All") %>%
+  dplyr::mutate(lib_id = str_c(library, Replicates),
+                lib_id = str_replace_all(lib_id, c("cDNAreplicate" = "cDNA-",
+                                                   "plasmidreplicate" = "plasmid-")),
+                lib_id = factor(lib_id, levels = c("plasmid-1", "plasmid-2", "cDNA-1", "cDNA-2"))) %>%
+  # count(lib_id)
+  ggplot(aes(x = genomic_regions, y = coverage)) + 
+    # stat_boxplot(geom = "errorbar", width = 0.4) +
+    geom_boxplot(outlier.alpha = 0, aes(color = genomic_regions), 
+                 position = position_dodge(width = 0.8), width = 0.6, fill = "transparent") +
+    # geom_violin(fill = "transparent", scale = "width") +
+    # facet_grid(library ~ Replicates) +
+    facet_wrap("lib_id") +
+    coord_cartesian(ylim = c(0, 250)) +
+    ylab("Read depth") + 
+    xlab("Genomic regions") +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1), 
+          axis.ticks.x = element_blank(), 
+          legend.position = "none") +
+    scale_color_npg() +
+    toolkit_tyj$theme_my
+
+  toolkit_tyj$SavePlot(filename_prefix = paste("./R1.library_summary/Cov_genomic_features/",
+                                               "Coverage_of_genomic_features_cSTARRseq_replicates_20220526", sep = ""),
+                       width = 8, height = 7, plot = p, device = c("png", "pdf"))
+  
+
+```
+
+
+# Sub-sample analysis.
+9.3.3
+
+## . calculate
+9.3.3
+
+## . Plot (Number)
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  df <- fread("./R2.enhancer_calling/downsample/Number_of_top_enhancer_repeatly_identified.csv") %>%
+    dplyr::filter(TopEnRate == 1,
+                  str_detect(Rate, "(0.2|0.4|0.6|0.8|^1$)"))
+  df %>%
+    dplyr::mutate(Rate = as.character(Rate)) %>%
+    ggplot(aes(x = Rate, y = NumHit)) +
+      geom_boxplot(fill = "transparent", 
+                   position = position_dodge(width = 0.2), 
+                   outlier.shape = NA,
+                   width = 0.8, 
+                   size = 0.2,
+                   color = "grey45") +
+      geom_beeswarm(dodge.width = 1, alpha = 1, size = 1, shape = 16, stroke = 0.1) +
+      toolkit_tyj$theme_my +
+      xlab("Rate of downsampled data") + 
+      ylab("Number of identified enhancers") + 
+      coord_cartesian(ylim = c(0, 4500))
+  toolkit_tyj$SavePlot(filename_prefix = "./R2.enhancer_calling/downsample/Num_of_En_with_varied_downsample_ratio",
+                       width = 8, height = 6)
+  
+```
+
+
+## . plot (rediscovery rate)
+```{r}
+  # plot
+  fread("./R2.enhancer_calling/downsample/Number_of_top_enhancer_repeatly_identified.csv") %>%
+    dplyr::mutate(olPercent = NumHit / NumTop, 
+                  Rate = as.character(Rate), 
+                  TopEnRate = as.character(TopEnRate)
+                  ) %>%
+    dplyr::filter(str_detect(Rate, "(0.2|0.4|0.6|0.8)")) %>%
+    ggplot(aes(x = TopEnRate, y = olPercent, color = Rate)) + 
+      geom_beeswarm(dodge.width = 0.2, alpha = 2/3, size = 0.3, shape = 16) +
+      geom_boxplot(fill = "transparent", 
+                   position = position_dodge(width = 0.2), 
+                   outlier.shape = NA,
+                   width = 0.8, 
+                   size = 0.2) +
+      # geom_violin(fill = "transparent") +
+      # scale_color_npg() + 
+      # scale_color_brewer(palette = "OrRd") +
+      scale_color_carto_d(palette = "Temps") +
+      toolkit_tyj$theme_my + 
+      theme(legend.position = c(0.12, 0.25), 
+            legend.title = element_blank(), 
+            legend.key.size = unit(0.3, units = "cm")) + 
+      xlab("Top enhancers identified using sampled down data") + 
+      ylab("Percentage of enhancers with sampled down data \noverlapped with all enhancers") +
+      scale_y_continuous(labels = scales::percent) + 
+      scale_x_discrete(labels = c(paste(1:9, "0%", sep = ""), "100%(Top)"))
+    
+  toolkit_tyj$SavePlot(filename_prefix = "./R2.enhancer_calling/downsample/Rediscovery_rate_with_varied_downsample_ratio",
+                       width = 8, height = 6)
+
+```
+
+
+# Plot (pyGenometrack)
+
+## . calculate fold change of STARR-seq
+
+`/scratch/2022-05-21/bioTanyj/At_enhancer/scripts/old_scripts_20210908/enhancer_enrichment_calculate.R`
+`/scratch/2022-05-21/bioTanyj/At_enhancer/scripts/old_scripts_20210908/2.4.0_enrichment_merge.R`
+`/scratch/2022-05-21/bioTanyj/At_enhancer/scripts/old_scripts_20210908/2.4.0_enrichment_calculate.sh`
+
+Attention: coordinate of bed/bedgraph was from 0 to N-1 for a N-bp length chromosome.
+
+
+## . preprare bed of enhancer/TE for pyGenometrack
+some code in `2.4.3` of Rmarkdown file.
+
+four columns bed file of Enhancer_STARRseq.
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  PlotWidth = 10000 # width used in plot
+  
+  # Gene information
+  gene_info <- fread("./refgenome/TAIR_genes_info_merge_20220510.csv.gz") %>%
+    dplyr::rename(geneId = gene_id) %>%
+    distinct()
+
+  # HK/TS enhancers
+  tshk_enhancer <- fread("./R7.TFs/bed_files/Enhancer_TSHK_gene_up500_down500_20220517.bed.gz") %>%
+    dplyr::rename(seqnames = V1, start = V2, end = V3, Gene_type = V4) %>%
+    group_by(seqnames, start, end) %>%
+    slice_head(n = 1)
+  
+  # enhancers
+  df <- fread("Enhancers_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_TE_SuperEn_20210513.csv.gz") %>%
+    dplyr::mutate(seqnames = str_c("chr", seqnames)) %>%
+    dplyr::select(-c(ATACseq:Dim.5)) %>%
+    left_join(., gene_info) %>%
+    left_join(., tshk_enhancer) %>%
+    dplyr::mutate(name = str_c(str_replace_all(SYMBOL_ls, "(.+?);.+", "\\1"),
+                               "Cit", Num_citation, sep = "_"),
+                  ) %>%
+    dplyr::select(seqnames:end, name)
+  
+  table(df$clusterK4, df$Gene_type)
+  
+  df %>%
+    fwrite("./R2.enhancer_calling/bw_file/En_STARRseq_4443_20220526.bed", col.names = F, sep = "\t")
+```
+
+TE
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  te <- fread("./refgenome/TAIR10_Transposable_Elements_20210510_aquired.txt") %>%
+    dplyr::mutate(seqnames = str_replace_all(Transposon_Name, "AT(\\d)TE.+", "\\1"), 
+                  strand = ifelse(orientation_is_5prime == "TRUE", "+", "-"), 
+                  start = Transposon_min_Start, 
+                  end = Transposon_max_End)
+  options(scipen = 999)
+  te %>%
+    dplyr::mutate(seqnames = str_c("chr", seqnames), 
+                  name = str_c(Transposon_Name, "(", Transposon_Super_Family, ")")) %>%
+    dplyr::select(seqnames, start, end, name) %>%
+    as_tibble() %>%
+    fwrite(., "./R2.enhancer_calling/files_for_pyGenomeTracks/TE_info_FourColumns_Transposon_name.bed",
+           col.names = F, sep = "\t")
+```
+
+
+## . prepare pyGenometrack file
+tracks:
+  1. bw: DHS, RNPOII, H3K4me1, H3K4me3, H3K27ac, H3K9ac, H3K27me3, and DNA methy.
+  2. bed: Enhancer, DHS
+  3. gene model
+
+- **2. files saved on the server**:
+  * `/scratch/2022-05-21/bioTanyj/At_enhancer/R2.enhancer_calling/bw_file_20210309`: bw files were not normed when transformed from bedgraph file. **NOT USED**
+  * `/scratch/2022-05-21/bioTanyj/At_enhancer/R2.enhancer_calling/bw_file_20210707`: normed bw files.
+  * `/scratch/2022-05-21/bioTanyj/At_enhancer/R2.enhancer_calling/bw_merge_20210909`: files generated in using `bowtie -m` to re-aglign reads. **NOT USED!**
+  
+```{shell}
+cd /scratch/2022-05-21/bioTanyj/At_enhancer/R2.enhancer_calling/bw_file_20210707
+
+# pyGenometrack use GTF instead of GFF3.
+ln -s ../bw_file_20210309/TAIR10_GFF3_genes_transposons_rename_chr.gtf TAIR10_GFF3_genes_transposons_rename_chr.gtf
+
+# bw files for epigenetic score.
+ln -s ../../work2_wj/DHS/DNase_merged.bw DNase_merged.bw 
+ln -s ../../work2_wj/WGBS/methylation.bw methylation.bw 
+ln -s ../../work2_wj/chip-seq/H3K27ac/H3K27ac.bw H3K27ac.bw
+ln -s ../../work2_wj/chip-seq3/H3K14ac/SRR8234080/H3K14ac.bw H3K14ac.bw
+ln -s ../../work2_wj/chip-seq/H3K27me3/H3K27me3.bw H3K27me3.bw
+ln -s ../../work2_wj/chip-seq/H3K4me1/H3K4me1.bw H3K4me1.bw
+ln -s ../../work2_wj/chip-seq/H3K4me3/H3K4me3.bw H3K4me3.bw
+ln -s ../../work2_wj/chip-seq/H3K9ac/new_GSM2366606/H3K9ac.bw H3K9ac.bw
+ln -s ../../work2_wj/chip-seq2/RNAPOII/RNAPOII.bw RNAPOII.bw
+ln -s ../../refgenome/ChIPseq/H3K9me1.bw H3K9me1.bw
+ln -s ../../data_wj/H3K9m2_GSM3309822/H3K9me2_new/H3K9me2.bw  H3K9me2.bw 
+
+# other epigenetic score.
+ls -s ../../work2_wj/chip-seq2/H2A/H2A.bw H2A.bw
+ls -s ../../work2_wj/chip-seq2/H2AW/H2AW.bw H2AW.bw
+ls -s ../../work2_wj/chip-seq2/H2AX/H2AX.bw H2AX.bw
+ls -s ../../work2_wj/chip-seq2/H2AZ/H2AZ.bw H2AZ.bw
+ls -s ../../work2_wj/chip-seq3/H3K23ac/SRR3134768/H3K23ac.bw H3K23ac.bw
+ls -s ../../work2_wj/chip-seq3/H3K36ac/SRR2932297/H3K36ac.bw H3K36ac.bw
+ls -s ../../work2_wj/chip-seq/H3K36me3/H3K36me3.bw H3K36me3.bw
+ls -s ../../refgenome/ChIPseq/H3K4me2.bw H3K4me2.bw
+ls -s ../../work2_wj/chip-seq3/H3K56ac/SRR8742327/H3K56ac.bw H3K56ac.bw
+ls -s ../../refgenome/ChIPseq/H4K16ac.bw H4K16ac.bw
+ls -s ../../work2_wj/chromatin/MNase-seq/MNase-seq.bw MNase-seq.bw
+ls -s ../../work2_wj/chip-seq2/RNAPOII/RNAPOII.bw RNAPOII.bw
+ls -s ../../work2_wj/chromatin/ATAC-seq/ATAC-seq.bw ATAC-seq.bw
+ls -s ../../work2_wj/chromatin/FAIRE-seq/FAIRE-seq.bw FAIRE-seq.bw
+
+```
+
+  
+## . select enhancers for plot.
+Snapshot:
+  1. Identification of enhancers with STARR-seq;
+  2. each Kmeans cluster;
+  3. Clustered/dispersed enhancers.
+  
+  
+### . Enhancers to illustrate STARR-seq
+
+#### . prepare bed for pyGenometrack
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  PlotWidth <- 10000 # width used in plot
+  
+  # Gene information
+  gene_info <- fread("./refgenome/TAIR_genes_info_merge_20220510.csv.gz") %>%
+    dplyr::rename(geneId = gene_id) %>%
+    distinct()
+
+  # HK/TS enhancers
+  tshk_enhancer <- fread("./R7.TFs/bed_files/Enhancer_TSHK_gene_up500_down500_20220517.bed.gz") %>%
+    dplyr::rename(seqnames = V1, start = V2, end = V3, Gene_type = V4) %>%
+    group_by(seqnames, start, end) %>%
+    slice_head(n = 1)
+  
+  # enhancers
+  df <- fread("Enhancers_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_TE_SuperEn_20210513.csv.gz") %>%
+    dplyr::mutate(seqnames = str_c("chr", seqnames)) %>%
+    dplyr::select(-c(ATACseq:Dim.5)) %>%
+    left_join(., gene_info) %>%
+    left_join(., tshk_enhancer) %>%
+    dplyr::select(seqnames:end, pVal:enrichment, clusterK4:annotation, 
+                  distanceToTSS, geneId, RPKM, ClusterActivity, contains("TE"),
+                  ClusterType:Gene_type)
+  
+  table(df$clusterK4, df$Gene_type)
+  
+```
+
+
+
+#### . Glimpse
+```{r}
+  # enhancers not overlap promoter and TEs.
+  df_noTE <- df %>%
+    dplyr::filter(str_length(TE) < 2,
+                  abs(distanceToTSS) > 400)
+  table(df_noTE$TE_Family)
+  
+  # bed for pyGenometrack
+  options(scipen = 999)
+  df_noTE %>%
+    arrange(desc(Num_citation)) %>%
+    head(n = 200) %>%
+    dplyr::mutate(
+                  name = str_c(str_replace_all(SYMBOL_ls, "(.+?);.+", "\\1"),
+                               "Cit", Num_citation, sep = "_"),
+                  seqnames = str_c("chr", seqnames),
+                  start = start - PlotWidth/2,
+                  end = end + PlotWidth/2) %>%
+    dplyr::select(seqnames:end) %>%
+    fwrite(., file = "./R2.enhancer_calling/plot_pyGenomeTracks/Enhancers_selected_top_cited.bed",
+           col.names = F, sep = "\t")
+```
+
+#### . Manually select
+
+#### . replot in pdf format
+
+```{r}
+
+  # collect selected enhancers
+  selectedCRE <- list.files(path = "./R2.enhancer_calling/plot_pyGenomeTracks/Enhancer_STARRseq/",
+                            pattern = ".+png")
+  selectedCRE <- data.frame(seqnames = str_extract(selectedCRE, "chr\\d"),
+                            start = str_replace_all(selectedCRE, ".+chr\\d\\-(\\d+)\\-(\\d+).png", "\\1"),
+                            end = str_replace_all(selectedCRE, ".+chr\\d\\-(\\d+)\\-(\\d+).png", "\\2")) %>%
+    dplyr::mutate(start = as.numeric(start) + PlotWidth/2, 
+                  end = as.numeric(end) - PlotWidth/2) %>%
+    left_join(., df_noTE) %>%
+    dplyr::mutate(start = start - PlotWidth/2,
+                  end = end + PlotWidth/2) %>%
+    dplyr::select(seqnames:end)
+  
+  fwrite(selectedCRE, file = "./R2.enhancer_calling/plot_pyGenomeTracks/Enhancer_STARRseq/selected_Enhancer_STARRseq_20220528.bed", col.names = F, sep = "\t")
+  
+```
+
+
+### . Enhancer groups (Kmeans cluster, TS/HK, and clustered/dispersed)
+
+#### . prepare bed for pygenome track
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  PlotWidth = 10000 # width used in plot
+  
+  # Gene information
+  gene_info <- fread("./refgenome/TAIR_genes_info_merge_20220510.csv.gz") %>%
+    dplyr::rename(geneId = gene_id) %>%
+    distinct()
+
+  # HK/TS enhancers
+  tshk_enhancer <- fread("./R7.TFs/bed_files/Enhancer_TSHK_gene_up500_down500_20220517.bed.gz") %>%
+    dplyr::rename(seqnames = V1, start = V2, end = V3, Gene_type = V4) %>%
+    group_by(seqnames, start, end) %>%
+    slice_head(n = 1)
+  
+  # enhancers
+  df <- fread("Enhancers_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_TE_SuperEn_20210513.csv.gz") %>%
+    dplyr::mutate(seqnames = str_c("chr", seqnames)) %>%
+    dplyr::select(-c(ATACseq:Dim.5)) %>%
+    left_join(., gene_info) %>%
+    left_join(., tshk_enhancer) %>%
+    dplyr::select(seqnames:end, pVal:enrichment, clusterK4:annotation, 
+                  distanceToTSS, geneId, RPKM, ClusterActivity, contains("TE"),
+                  ClusterType:Gene_type)
+  
+  table(df$clusterK4, df$Gene_type)
+```
+
+
+#### . Glimpse
+```{r}
+  # enhancers not overlap promoter and TEs.
+  df_glimpse <- df %>%
+    dplyr::select(seqnames:end, clusterK4, geneId, ClusterType, SYMBOL_ls, Num_citation, Gene_type) %>%
+    dplyr::mutate(clusterK4 = str_c("KmeansC", clusterK4)) %>%
+    as_tibble() %>%
+    dplyr::mutate(
+                # name = str_c("chr", seqnames, start, end, 
+                #              round(enrichment, 2), geneId, 
+                #              str_replace_all(SYMBOL_ls, "(.+?);.+", "\\1"), 
+                #              "Cit", Num_citation, sep = "_"),
+                start = start - PlotWidth/2,
+                end = end + PlotWidth/2)
+  
+  # each kmeans cluster
+  df_tmp <- NULL
+  df_tmp <- df_glimpse %>%
+    group_by(clusterK4) %>%
+    arrange(clusterK4, desc(Num_citation)) %>%
+    slice_head(n = 50) %>%
+    dplyr::select(seqnames:end, clusterK4) %>%
+    dplyr::rename(name = clusterK4) %>%
+    dplyr::filter(name != "KmeansC0")
+  
+  # Clustered/dispersed
+  df_tmp <- df_glimpse %>%
+    group_by(ClusterType) %>%
+    arrange(ClusterType, desc(Num_citation)) %>%
+    # slice_head(n = 50) %>%
+    dplyr::select(seqnames:end, ClusterType) %>%
+    dplyr::rename(name = ClusterType) %>%
+    rbind(., df_tmp)
+  
+  # TS/HK
+  df_tmp <- df_glimpse %>%
+    group_by(Gene_type) %>%
+    arrange(Gene_type, desc(Num_citation)) %>%
+    slice_head(n = 50) %>%
+    dplyr::select(seqnames:end, Gene_type) %>%
+    dplyr::rename(name = Gene_type) %>%
+    dplyr::filter(!is.na(name)) %>%
+    rbind(., df_tmp)
+  
+  # bed for pyGenometrack
+  options(scipen = 999)
+  for (i in unique(df_tmp$name)) {
+    df_tmp %>%
+      dplyr::filter(name == i) %>%
+      ungroup() %>%
+      dplyr::select(seqnames:end) %>%
+      fwrite(., file = str_c("./R2.enhancer_calling/plot_pyGenomeTracks/Enhancers_selected_", i, ".bed"),
+             col.names = F, sep = "\t")
+  }
+  
+```
+
+
+#### . Manually select
+
+```{r}
+  source("D:/SUST/code/TanYongjun_code.R")
+  # collect selected enhancers
+  selected_En <- list.files(path = "./R2.enhancer_calling/plot_pyGenomeTracks/Enhancer_groups/",
+                            pattern = ".+png$")
+  selected_En <- tibble(seqnames = str_replace_all(selected_En, ".+_(chr\\d)\\-(\\d+)\\-(\\d+).png", "\\1"),
+                        start = str_replace_all(selected_En, ".+_(chr\\d)\\-(\\d+)\\-(\\d+).png", "\\2") %>% as.numeric(),
+                        end = str_replace_all(selected_En, ".+_(chr\\d)\\-(\\d+)\\-(\\d+).png", "\\3") %>% as.numeric(),
+                        name = str_replace_all(selected_En, "^Enhancers_selected_(.+)_(chr\\d)\\-(\\d+)\\-(\\d+).png", "\\1"))
+  for (i in unique(selected_En$name)) {
+    selected_En %>%
+      dplyr::filter(name == i) %>%
+      dplyr::select(seqnames:end) %>%
+      fwrite(str_c("./R2.enhancer_calling/plot_pyGenomeTracks/Enhancer_groups/Manually_selected_", i, ".bed"),
+             col.names = F, sep = "\t")
+  }
+```
+
+
+### . Reproducibility
+Show enhancers which identified in merge but not in two single replicates.
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  en_1.2 <- fread("./R2.enhancer_calling/All_raw_enhancers_20210307.csv") %>%
+    dplyr::filter(enrichment > 1.3, sampleCov < 2700, controlCov < 2700,
+                  str_detect(ID, "cEnhancer.+strategy1")) %>%
+    split(.$ID) %>%
+    map(., GenomicRanges::makeGRangesFromDataFrame, keep.extra.columns = T)
+  
+  names(en_1.2)
+
+# enhancers identified with merged dataset which did not identified in both replicated.
+  en_M <- en_1.2$cEnhancer_merge_strategy1 %>%
+    as.data.frame()
+  ol1 <- findOverlaps(en_1.2$cEnhancer_merge_strategy1, en_1.2$cEnhancer_rep1_strategy1, minoverlap = 1)
+  ol2 <- findOverlaps(en_1.2$cEnhancer_merge_strategy1, en_1.2$cEnhancer_rep2_strategy1, minoverlap = 1)
+  en_M$Hit_Rep1 <- en_M$Hit_Rep2 <- "N"
+  en_M$Hit_Rep1[unique(ol1@from)] <- "Y"
+  en_M$Hit_Rep2[unique(ol2@from)] <- "Y"
+  
+  en_M %>%
+    dplyr::mutate(Type  =str_c(Hit_Rep1, Hit_Rep2, sep = "")) %>%
+    ggplot(aes(x = Type, y = enrichment, color = Type)) +
+      # geom_density() +
+      geom_violin(fill = "transparent") + 
+      geom_boxplot(fill = "transparent", outlier.shape = NA, width = 0.1) +
+      toolkit_tyj$theme_my + 
+      scale_y_log10() + 
+      ggtitle("Enrichment of enhancers identified in Merged data\nclassified into groups which were identified in each replicates or not") + 
+      xlab("Identified in replicates or not")
+  
+  en_M_uni <- en_M %>%
+    dplyr::filter(Hit_Rep1 == "N" & Hit_Rep2 == "N") %>%
+    as_tibble() %>%
+    dplyr::mutate(EnrichBin = str_c("EnrichBin_", as.numeric(cut(enrichment, 4)))) 
+
+# select based on enrichment level
+  options(scipen = 999)
+  PlotWidth = 10000 # width used in plot
+  
+  for (i in unique(en_M_uni$EnrichBin)) {
+    set.seed(12345)
+    en_M_uni %>%
+      dplyr::filter(EnrichBin == i) %>%
+      dplyr::slice_sample(n = 10) %>%
+      dplyr::mutate(start = start - PlotWidth/2,
+                    end = end + PlotWidth/2) %>%
+      dplyr::select(seqnames:end) %>%
+      fwrite(., file = str_c("./R2.enhancer_calling/plot_pyGenomeTracks/Enhancers_selected_", i, ".bed"),
+       col.names = F, sep = "\t")
+  }
+  NA
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

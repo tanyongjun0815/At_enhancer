@@ -1,0 +1,803 @@
+---
+title: "Fig4&S4"
+author: "TYJ"
+date: '2022-05-18'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, background="transparent", fig.align='center' }
+knitr::opts_chunk$set(echo = F, include = T, highlight = T, warning = F, fig.align = "c")
+options(knitr.kable.NA = '')
+library(pheatmap)
+library(grid)
+library(data.table)
+library(GenomicRanges)
+library(tidyverse)
+source("D:/SUST/code/TanYongjun_code.R")
+```
+
+# Overlap (enhancer vs Conserved elements)
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  results_sig <- fread("./R8.conservation/ConservedElements_ol_GAT_results_all_20210630.tsv") %>%
+    dplyr::mutate(percent_overlap_size_annotation = percent_overlap_size_annotation / 100,
+                  annotation = factor(annotation, levels = c("Enhancer_STARRseq", 
+                                                             "Enhancer_Zhu2015", 
+                                                             "Enhancer_Wang2019",
+                                                             "Enhancer_Meng2021")),
+                  qvalue = p.adjust(pvalue, method = "BH"),
+                  label = str_c(scales::percent(percent_overlap_size_annotation, accuracy = 0.01),
+                                "\nFC=", format(fold, digits = 2), "\n", toolkit_tyj$returnAsterisk(qvalue)),
+                  observed = observed / annotation_size,
+                  expected  = expected / annotation_size)
+  
+  # Enhancers identified by four methods
+  results_sig %>%
+    ggplot(aes(x = annotation, y = percent_overlap_size_annotation)) + 
+      geom_col(fill = "grey65") + 
+      toolkit_tyj$theme_my + 
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      scale_y_continuous(labels = scales::percent) + 
+      geom_text(aes(y = percent_overlap_size_annotation / 2, label = label), size = 5/.pt) + 
+      ylab("Enhancers overlaped with conserved elements")
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R8.conservation/ConservedElements_ol_GAT_results_BarPlot_20210514",
+  #                      width = 6, height = 6)
+  
+  # only Enhancer_STARRseq
+  results_sig %>%
+    dplyr::filter(annotation == "Enhancer_STARRseq") %>%
+    pivot_longer(cols = c(expected, observed), names_to = "Type", values_to = "percent") %>%
+    dplyr::mutate(Type = str_replace_all(Type, c("observed" = "Observed", 
+                                                 "expected" = "Expected")),
+                  Type = factor(Type, levels = c("Observed", "Expected"))) %>%
+    ggplot(aes(x = Type, y = percent)) + 
+      geom_col(aes(fill = Type), alpha = 3/4) + 
+      toolkit_tyj$theme_my + 
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      scale_y_continuous(labels = scales::percent) + 
+      geom_text(aes(y = percent / 2, label = percent(percent, accuracy = 0.01)), size = 5/.pt) + 
+      scale_fill_manual(values = c(toolkit_tyj$AtEn_EnPro_Color[1], "grey65")) +
+      ylab("Enhancers overlaped with conserved elements") +
+      geom_signif(annotations = "FC=1.42\np<0.001",
+                  y_position = 0.4, xmin = 1, xmax = 2,textsize  = 6/.pt, size = 0.2) + 
+      theme(legend.position = "none") + 
+      coord_cartesian(ylim = c(0, 0.46))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R8.conservation/ConservedElements_ol_Enhancer_STARRseq_GAT_results_BarPlot_20220520",
+                       width = 5, height = 5.52)
+  
+  
+```
+
+
+# PhaseCons score
+
+*20220420* 4423 cSTARRseq enhancer, > 1.3
+
+## prepare
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  library(tidyverse)
+  
+  Feature_level <- c("Enhancer_STARRseq", "Promoter", "FiveUTR", "Exon",
+                    "Intron", "ThreeUTR", "Gene","Intergenic",
+                     "GenomeWide", "Random")
+
+# load PhaseCons score and get the true region width. (CREs located on chrC/M were discared in Step1)
+  phastConsAt <- fread("./R8.conservation/PhastCons_score_matrix_all_CRE_20220420.csv.gz") %>%
+    dplyr::rename(PhastCons = score) %>%
+    dplyr::filter(str_detect(id, "(CorePro|^Promoter$|Promoter_|iSTARR-seq|PAS)", negate = T)) %>%
+    dplyr::mutate(id = str_replace_all(id, c("cSTARR-seq" = "Enhancer",
+                                             "ProEnlarge" = "Promoter",
+                                             "Interneric" = "Intergenic"))) %>%
+    dplyr::mutate(Features = str_replace_all(id, "(_noSTARRseq|_STARRseq)", ""), 
+                  tmp = str_replace_all(string = id, pattern = ".+_(noSTARRseq|STARRseq)", replacement = "\\1"),
+                  Type = ifelse(str_detect(tmp, "noSTARRseq"), tmp, "All"),
+                  Type = ifelse(str_detect(tmp, "STARRseq"), tmp, "All"), 
+                  Features  = str_replace_all(Features, "^Enhancer$", "Enhancer_STARRseq")) %>%
+    dplyr::filter(str_detect(Features, "(Enhancer_W.+|Enhancer_Z.+)", negate = T)) %>%
+    dplyr::mutate(Features = factor(Features, levels = Feature_level),
+                  Type = str_replace_all(Type, c("^STARRseq$" = "With enhancer",
+                                                 "noSTARRseq" = "Without enhancer")))
+  x <- unique(phastConsAt$id) %>% sort()
+  table(phastConsAt$Type, phastConsAt$Features)
+  table(phastConsAt$Type)
+  table(phastConsAt$Features)
+  table(phastConsAt$id)
+
+
+```
+
+
+## each features
+
+```{r}
+## plot --------------------------------------------------------------------
+
+  ## each CRE as a whole
+  sigLabel <- phastConsAt %>%
+    dplyr::filter(Type == "All", Features != "Gene") %>%
+    dplyr::select(Type, Features, PhastCons) %>%
+    dplyr::rename(value = PhastCons) %>%
+    toolkit_tyj$MultiComparison2(df = ., Name_variable1 = "Type", Name_variable2 = "Features",
+                                 Name_value = "value", OnlyDF = T, 
+                                test.name = "kruskal", label.sigLevel = 0.05)
+  
+  df <- phastConsAt %>%
+    dplyr::filter(Type == "All", Features != "Gene") %>%
+    dplyr::group_by(id, Type, Features) %>%
+    dplyr::summarise(Num = n(), Median = median(PhastCons, na.rm = T)) %>%
+    dplyr::mutate(label = str_c("Median=", round(Median, digits = 2), "\nN=", Num, sep = "")) %>%
+    dplyr::filter(Type == "All")
+  
+  df <- sigLabel %>%
+    full_join(., df) %>%
+    dplyr::mutate(Features = factor(Features, levels = Feature_level)) %>%
+    arrange(Features) %>%
+    dplyr::mutate(xlab = str_c(Features, "\n(", Num, ")"),
+                  lab_N = str_c("(", Num, ")"))
+  
+  p <- phastConsAt %>%
+    dplyr::filter(Type == "All", Features != "Gene") %>%
+    ggplot(aes(x = Features, y = PhastCons, color = Features)) +
+      geom_violin(fill = "transparent", scale = "width", width = 0.75, size = 0.3) + 
+      geom_boxplot(width = 0.1, outlier.alpha = 0, fill = "transparent") +
+      toolkit_tyj$theme_my + 
+      geom_hline(yintercept = median(phastConsAt$PhastCons[phastConsAt$id == "Random"], na.rm = T), 
+                 linetype = 2, size = 0.5, color = "grey35") +
+      # geom_point(data = df, 
+      #            aes(x = Features, y = Median), color = "black", size=0.5) + 
+      # geom_label(data = df, aes(x = Features, y = 1.2, label = label), color = "grey35", 
+      #            size = 5/.pt, alpha = 0, label.padding = unit(0.03, units = "cm")) + 
+      
+      scale_y_continuous(expand = expansion(c(0.02, 0.08), 0), breaks = seq(0, 1, 0.25)) + 
+      geom_text(data = df, aes(x = Features, y = 1.12, label = sigLabel), 
+                color = "black", size = 6/.pt) + 
+      geom_text(data = df, aes(x = Features, y = 1.05, label = lab_N), 
+                color = "black", size = 5/.pt) + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "none",
+            axis.title.x = element_blank()) + 
+      scale_color_manual(values = c(toolkit_tyj$AtEn_EnPro_Color[1], rep("grey35", 100))) + 
+      scale_x_discrete(labels = str_replace_all(df$Features, "_", "\n"))
+  p
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R8.conservation/PhastCons_each_Features_tile_20220520", 
+                       width = 8.5, height = 6, plot = p)
+```
+
+
+## features overlapped with En or not
+
+```{r}
+## Features x (STARRseq, noSTARRseq, All)
+  phastConsAt <- phastConsAt %>%
+        dplyr::mutate(Type = str_replace_all(Type, c("Without enhancer" = "NO",
+                                                 "With enhancer" = "YES")))
+  
+  df <- phastConsAt %>%
+    dplyr::filter(str_detect(Features, "(Random|Enhancer_STARRseq|Gene)", negate = T),
+                  Type != "All")%>%
+    dplyr::group_by(id, Type, Features) %>%
+    dplyr::summarise(Num = n(), Median = median(PhastCons, na.rm = T)) %>%
+    dplyr::mutate(label = str_c("Median=", round(Median, digits = 2), "\nN=", Num, sep = ""))
+  
+  sigLabel <- phastConsAt %>%
+    dplyr::filter(str_detect(Features, "(Random|Enhancer_STARRseq|Gene)", negate = T), 
+                   Type != "All",
+                  !is.na(PhastCons)) %>%
+    dplyr::mutate(Features = as.character(Features)) %>%
+    dplyr::select(Features, Type, PhastCons) %>%
+    toolkit_tyj$MultiComparison2(df = ., Name_variable1 = "Features", Name_variable2 = "Type",
+                                 Name_value = "PhastCons", OnlyDF = T, 
+                                 test.name = "kruskal", label.sigLevel = 0.05)
+  
+  df <- sigLabel %>%
+    full_join(df, .) %>%
+    dplyr::mutate(Features = factor(Features, levels = Feature_level),
+                  xlab = str_c(Type, " (", Num, ")"),
+                  label1 = str_c("(", Num, ")")) %>%
+    arrange(Features)
+  
+  phastConsAt %>%
+    dplyr::filter(str_detect(Features, "(Random|Enhancer_STARRseq|Gene)", negate = T),
+                  Type != "All")%>%
+    dplyr::mutate(Features = factor(Features, levels = Feature_level),
+                  Type = factor(Type, levels = c("YES", "NO"))) %>%
+    ggplot(aes(x = Type, y = PhastCons, color = Type)) +
+      geom_violin(fill = "transparent", scale = "width", width = 0.75, size = 0.3) + 
+      geom_boxplot(width = 0.1, outlier.alpha = 0, fill = "transparent") +
+      toolkit_tyj$theme_my + 
+      # geom_hline(yintercept = median(phastConsAt$PhastCons[phastConsAt$id == "Random"], na.rm = T), 
+      #            linetype = 2, size = 0.5, color = "grey35") +
+      # geom_point(data = df, aes(x = Type, y = Median), color = "red", size = 0.5) + 
+      facet_grid(. ~ Features, space = "free", scales = "free") + 
+      # geom_label(data = df, aes(x = Type, y = 1.2, label = label), color = "grey35",
+      #            size = 4/.pt, alpha = 0, label.padding = unit(0.03, units = "cm")) +
+      scale_y_continuous(expand = expansion(c(0.02, 0.08), 0), 
+                         breaks = c(0, 0.25, 0.5, 0.75, 1)) + 
+      # geom_text(data = df, aes(x = Type, y = 1.1, label = value),
+      #           color = "black", size = 6/.pt) +
+      geom_text(data = df, aes(x = Type, y = 1.05, label = label1),
+                color = "black", size = 4/.pt) +
+      geom_signif(comparisons = list(c("YES", "NO")), 
+                  test = wilcox.test, textsize = 6/.pt, 
+                  color = "black",
+                  size = 0.2, map_signif_level = T) +
+      scale_color_manual(values = c(toolkit_tyj$AtEn_EnPro_Color[1], rep("grey35", 100))) + 
+      # xlab("Overlap enhancer or not") +
+      theme(panel.spacing = unit(0.04, "cm"), 
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "bottom",
+            axis.title.x = element_blank(),
+            legend.margin = margin(-10, 0,0,0),
+            legend.key.size = unit(0.3, "cm")) + 
+      guides(color = guide_legend(title = "Overlapped with enhancer"))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R8.conservation/PhastCons_Features_with_without_En_20220420", 
+                       width = 8.5, height = 6.25)
+
+```
+
+
+# PI
+
+*20220420* 4423 cSTARRseq enhancer, > 1.3
+
+## prepare
+```{r}
+  rm(list = ls())
+  options(scipen = 100)
+  setwd("D:/SUST/Enhancers_A.T/")
+  
+  Feature_level <- c("Enhancer_STARRseq", "Promoter", "FiveUTR", "Exon",
+                    "Intron", "ThreeUTR", "Gene","Intergenic",
+                     "GenomeWide", "Random")
+  
+## load
+  source("D:/SUST/code/TanYongjun_code.R")
+  cre_score <- fread("./R8.conservation/index/PI_CRE_all_20220420.tsv.gz") %>%
+    dplyr::filter(str_detect(id, "(iSTARR-seq|PAS)", negate = T)) %>%
+    dplyr::mutate(Features = str_replace_all(id, "(.+)_(.+seq)", "\\1"), 
+                  Type = str_replace_all(id, "(.+)_(.+seq)", "\\2"),
+                  Type = ifelse(Features == Type, "All", Type),
+                  id = str_replace_all(id, "cSTARR-seq", "Enhancer_STARRseq"),
+                  Features = str_replace_all(Features, "cSTARR-seq", "Enhancer_STARRseq"))
+  table(cre_score$Features, cre_score$Type)
+  
+  geno_score <- fread("./R8.conservation/index/PI_GenomeWide_thin20_20210418.tsv.gz") %>%
+    dplyr::select(chr:end, group, value) %>%
+    dplyr::rename(PI = value) %>%
+    dplyr::mutate(id = "Random", Features = "Random", Type = "All")
+  colnames(cre_score)[1:3] <- c("chr", "start", "end")
+  
+  cre_score <- full_join(cre_score, geno_score)
+  
+```
+
+## each features
+
+```{r}
+## Genomic features -------------------
+## plot of each group
+  for (i in unique(cre_score$group)) {
+    # i <- unique(cre_score$group)[2]
+    cat(i, ";  ")
+    ## each CRE/genomic features
+    tmp <- cre_score %>% 
+      ungroup() %>%
+      dplyr::filter(group == i, 
+                    Type == "All",
+                    str_detect(Features, "iSTARR|CorePro|Promoter|PAS|Enhancer_W.+|Enhancer_Z.+|Gene", negate = T)) %>%
+      dplyr::mutate(PI = as.numeric(PI) * 1000, 
+                    Features = str_replace_all(Features, c("Interneric" = "Intergenic",
+                                                           "ProEnlarge" = "Promoter")), 
+                    Features = factor(Features, levels = Feature_level))
+    
+    # summary
+    tmp_label <- tmp %>% 
+      dplyr::group_by(group, Features) %>%
+      dplyr::summarise(Median = round(median(PI, na.rm = T), digits = 2),
+                Num = n()) %>%
+      dplyr::mutate(label = str_c("Median=", Median, "\nN=", Num, sep = ""))
+    
+    # sig label
+    sig_label <- toolkit_tyj$Multicomparison(Data_comapre = dplyr::select(tmp, group, Features, PI) %>% dplyr::rename(value = PI), 
+                                Name_variable1 = "group", 
+                                Name_variable2 = "Features", 
+                                test.name = "kruskal")
+    names(sig_label$significant.label) <- str_replace_all(names(sig_label$significant.label), 
+                                                          c("variable1" = "group", 
+                                                            "variable2" = "Features"))
+    
+    # plot
+    p <- tmp %>%
+      ggplot(aes(y = PI, x = Features, color = Features)) +
+      geom_hline(yintercept = tmp_label$Median[tmp_label$Features == "Random"], 
+                 linetype = 2, size = 0.5, color = "grey35") +
+      geom_violin(fill = "transparent", scale = "width", width = 0.75, size = 0.3) + 
+      geom_boxplot(width = 0.1, outlier.shape = NA, fill  = "transparent") +
+      # facet_grid(region ~ ., scales = "free_y") +
+      # ggtitle(i) +
+      coord_cartesian(ylim = c(0.01, 80)) +
+      ylab(expression(Nucleotide~diversity~(x10^-3))) +
+      xlab("Features") +
+      # labs(caption = "Kruskal-Wallis test, p < 0.05") +
+      scale_y_log10() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "none",
+            axis.title.x = element_blank()) + 
+      toolkit_tyj$theme_my +
+      # geom_point(data = tmp_label, aes(x = Median, y = Features), color = "red", size = 0.5) + 
+      # geom_label(data = tmp_label, aes(x = 0.02, y = Features, label = label), 
+      #            color = "grey35", size = 5/.pt, 
+      #            label.padding = unit(0.03, units = "cm"), 
+      #            fill = "transparent") + 
+      geom_text(data = tmp_label, 
+                aes(y = 50, x = Features, label = str_c("(", Num, ")")), 
+                color = "black", size = 5/.pt) + 
+      geom_text(data = sig_label$significant.label, 
+                aes(y = 80, x = Features, label = value), 
+                color = "black", size = 6/.pt) + 
+      scale_color_manual(values = c(toolkit_tyj$AtEn_EnPro_Color[1], rep("grey35", 100))) + 
+      scale_x_discrete(labels = function(x){str_replace_all(x, "_", "\n")})
+    
+    toolkit_tyj$SavePlot(filename_prefix = paste("./R8.conservation/index/PI_", i, "_all_regions_1", sep = ""),
+                           width = 10, height = 6, plot = p, device = c("pdf", "png"))
+    
+  }
+  
+
+```
+
+## all groups in one figures
+
+```{r}
+
+    ## each CRE/genomic features
+    tmp <- cre_score %>% 
+      ungroup() %>%
+      dplyr::filter(Type == "All",
+                    group != "All_1001genomes",
+                    str_detect(Features, "iSTARR|CorePro|Promoter|PAS|Enhancer_W.+|Enhancer_Z.+|Gene", negate = T)) %>%
+      dplyr::mutate(PI = as.numeric(PI) * 1000, 
+                    Features = str_replace_all(Features, c("Interneric" = "Intergenic",
+                                                           "ProEnlarge" = "Promoter")), 
+                    Features = factor(Features, levels = Feature_level)) #%>%
+      # slice_sample(prop = 0.05)
+    
+    # summary
+    tmp_label <- tmp %>% 
+      dplyr::group_by(group, Features) %>%
+      dplyr::summarise(Median = round(median(PI, na.rm = T), digits = 2),
+                Num = n()) %>%
+      dplyr::mutate(label = str_c("Median=", Median, "\nN=", Num, sep = ""))
+    
+    # sig label
+    sig_label <- toolkit_tyj$MultiComparison2(df = dplyr::select(tmp, group, Features, PI), 
+                                Name_variable1 = "group", 
+                                Name_variable2 = "Features", Name_value = "PI",
+                                test.name = "kruskal", OnlyDF = T)
+    names(sig_label$significant.label) <- str_replace_all(names(sig_label$significant.label), 
+                                                          c("variable1" = "group", 
+                                                            "variable2" = "Features"))
+    
+    # plot
+    p <- ggplot(aes(y = PI, x = Features, color = Features), data = tmp) +
+            geom_hline(aes(yintercept = Median), data = dplyr::filter(tmp_label, Features == "Random"),
+                       linetype = 2, size = 0.3, color = "grey35") +
+            geom_violin(fill = "transparent", scale = "width", width = 0.75, size = 0.3) + 
+            geom_boxplot(width = 0.2, outlier.shape = NA, fill  = "transparent") +
+            facet_wrap("group", scales = "free_y", ncol = 2) +
+            # ggtitle(i) +
+            coord_cartesian(ylim = c(0.01, 250)) +
+            ylab(expression(Nucleotide~diversity~(x10^-3))) +
+            xlab("Features") +
+            # labs(caption = "Kruskal-Wallis test, p < 0.05") +
+            scale_y_log10(expand = expansion(add = c(0, 1))) +
+            theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+                  legend.position = "none",
+                  axis.title.x = element_blank(),
+                  panel.spacing = unit(0.001, "cm")) + 
+            toolkit_tyj$theme_my +
+            # geom_point(data = tmp_label, aes(x = Median, y = Features), color = "red", size = 0.5) + 
+            # geom_label(data = tmp_label, aes(x = 0.02, y = Features, label = label), 
+            #            color = "grey35", size = 5/.pt, 
+            #            label.padding = unit(0.03, units = "cm"), 
+            #            fill = "transparent") + 
+            geom_text(data = tmp_label, 
+                      aes(y = 100, x = Features, label = str_c("(", Num, ")")), 
+                      color = "grey25", size = 5/.pt) + 
+            geom_text(data = sig_label, 
+                      aes(y = 600, x = Features, label = sigLabel), 
+                      color = "black", size = 6/.pt) + 
+            scale_color_manual(values = c(toolkit_tyj$AtEn_EnPro_Color[1], rep("grey35", 100))) + 
+            scale_x_discrete(labels = function(x){str_replace_all(x, "_", "\n")})
+    # p
+    
+    toolkit_tyj$SavePlot(filename_prefix = paste("./R8.conservation/index/PI_all_subgrups_in_one_figure", sep = ""),
+                           width = 16, height = 12, plot = p, device = c("png", "pdf"))
+
+
+```
+
+
+## features overlapped with En or not
+
+```{r}
+## GenomicFeatures X Enhancer
+    
+#plot of each group
+  for (i in unique(cre_score$group)) {
+    # i <- unique(cre_score$group)[2]
+    cat(i, ";  ")
+    ## each CRE/genomic features
+    tmp <- cre_score %>% 
+      dplyr::filter(group == i, 
+                    str_detect(id, "iSTARR|CorePro|Random|Promoter|PAS|Enhancer_W.+|Enhancer_Z.+|Enhancer_STARRseq|GenomeWide|Gene", 
+                               negate = T),
+                    Type != "All") %>%
+      dplyr::mutate(PI = as.numeric(PI) * 1000, 
+                    Features = str_replace_all(Features, c("Interneric" = "Intergenic",
+                                                           "ProEnlarge" = "Promoter")), 
+                    Type = str_replace_all(Type, c("noSTARRseq" = "NO", 
+                                                   "^STARRseq$" = "YES")),
+                    Type = factor(Type, levels = c("YES", "NO")),
+                    Features = factor(Features, levels = Feature_level))
+    
+    # summary
+    tmp_label <- tmp %>% 
+      group_by(Type, group, Features) %>%
+      dplyr::summarise(Median = round(median(PI, na.rm = T), digits = 2),
+                Num = n()) %>%
+      dplyr::mutate(label = str_c("Median=", Median, "\nN=", Num, sep = ""))
+    
+    # sig label
+    sig_label <- toolkit_tyj$Multicomparison(Data_comapre = dplyr::select(tmp, Features, Type, PI) %>% 
+                                               dplyr::rename(value = PI), 
+                                            Name_variable1 = "Features", 
+                                            Name_variable2 = "Type", 
+                                            test.name = "kruskal")
+    names(sig_label$significant.label) <- str_replace_all(names(sig_label$significant.label), 
+                                                          c("variable1" = "Features", 
+                                                            "variable2" = "Type"))
+   
+    sig_label$significant.label$Features <- factor(sig_label$significant.label$Features, 
+                                                 levels = Feature_level)
+
+    # plot
+    p <- tmp %>%
+      ggplot(aes(y = PI, x = Type, color = Type)) +
+      # geom_vline(xintercept = tmp_label$Median[tmp_label$Features == "Random"], 
+                 # color = "grey45", linetype = 3) +
+      geom_violin(fill = "transparent", scale = "width", width = 0.75, size = 0.3) + 
+      geom_boxplot(width = 0.1, outlier.shape = NA, fill = "transparent") +
+      facet_grid(. ~ Features, scales = "free_y", space = "free_y") +
+      # ggtitle(i) +
+      coord_cartesian(ylim = c(0.01, 95)) +
+      ylab(expression(Nucleotide~diversity~(x10^-3))) +
+      # ylab("Enhancers and genomic features") +
+      # labs(caption = "Kruskal-Wallis test, p < 0.05") +
+      scale_y_log10() +
+      theme(panel.spacing = unit(0.04, "cm"), 
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "bottom",
+            axis.title.x = element_blank(),
+            legend.margin = margin(-10, 0,0,0),
+            legend.key.size = unit(0.3, "cm")) + 
+      toolkit_tyj$theme_my +
+      # geom_point(data = tmp_label, aes(x = Median, y = Type), color = "red", size = 0.5) + 
+      # geom_label(data = tmp_label, aes(y = 0.02, x = Type, label = label), 
+      #            color = "grey35", size = 4/.pt, 
+      #            label.padding = unit(0.03, units = "cm"), 
+      #            fill = "transparent") + 
+      geom_signif(comparisons = list(c("YES", "NO")), 
+                  test = wilcox.test, textsize = 6/.pt, 
+                  color = "black",
+                  size = 0.2, map_signif_level = T) +
+      geom_text(data = tmp_label,
+                aes(y = 50, x = Type, label = str_c("(", Num, ")")),
+                color = "black", size = 4/.pt) +
+      # geom_text(data = sig_label$significant.label, 
+      #           aes(y = 80, x = Type, label = value), 
+      #           color = "black", size = 6/.pt) + 
+      scale_color_manual(values = c(toolkit_tyj$AtEn_EnPro_Color[1], rep("grey35", 100))) + 
+      guides(color = guide_legend(title = "Overlapped with enhancer"))
+    
+    toolkit_tyj$SavePlot(filename_prefix = paste("./R8.conservation/index/PI_", i, "_region_X_En_1", sep = ""),
+                           width = 10, height = 6, plot = p, device = c("png", "pdf"))
+    
+  }
+```
+
+
+# Fst
+Fst was calculated between two groups per-bp. Thus, the plot was performed on the TaiYi duo to very huge file was generated.
+
+each features/ features X En was plot in the same step.
+
+```{r}
+##################################################################################
+#  plot Fst of CRE for each group pairs.
+#                         Tanyongjun 20210420, 20220521
+##################################################################################
+
+rm(list = ls())
+setwd("/scratch/2022-05-18/bioTanyj/At_enhancer/R8.conservation/population_genetics")
+source("/work/bio-tanyj/soft/TanYongjun_code.R")
+
+# load file ------------------------------
+  cat(">>> start loading\n")
+  cre_score <- fread("./FST_CRE_all_20220420.tsv.gz") %>%
+    group_by(group, id)
+  # geno_score <- fread("./FST_GenomeWide_thin10_20210418.tsv.gz") %>%
+  #   dplyr::mutate(id = "GenomeWide") %>%
+  #   dplyr::select(chr:end, group, id, value)
+  # names(geno_score) <- names(cre_score)
+  # cre_score <- rbind(cre_score, geno_score)
+  # rm(geno_score)
+  
+  Feature_level <- c("Enhancer_STARRseq", "Promoter", "FiveUTR", "Exon",
+                    "Intron", "ThreeUTR", "Gene","Intergenic",
+                     "GenomeWide", "Random")
+  cat(">>> Load complete\n")
+
+
+## plot of each group pairs (each features) -------------------------------
+  for (i in unique(cre_score$group)) {
+    # i <- unique(cre_score$group)[1]
+    cat(i, ";  ")
+    ## each CRE/genomic features
+    tmp <- cre_score %>% 
+      dplyr::filter(group == i, 
+                    str_detect(id, "_", negate = T),
+                    str_detect(id, "iSTARR|Promoter|CorePro|PAS|Enhancer_|GenomeWide", negate = T)) %>%
+      dplyr::mutate(region = str_replace_all(id, "(.+)_.+", "\\1"), 
+                    id = str_replace_all(id, c("cSTARR-seq" = "Enhancer_STARRseq", 
+                                               "Interneric" = "Intergenic",
+                                               "ProEnlarge" = "Promoter")), 
+                    id = factor(id, levels = Feature_level))
+    table(tmp$id)
+
+    # summary
+    tmp_label <- tmp %>% 
+      group_by(id, group) %>%
+      summarise(Median = round(median(FST, na.rm = T), digits = 4),
+                Num = n()) %>%
+      dplyr::mutate(label = str_c("Median=", Median, "\nN=", Num, sep = ""))
+    
+    # sig label
+    sig_label <- toolkit_tyj$Multicomparison(Data_comapre = dplyr::select(tmp, group, id, FST) %>% 
+                                                 dplyr::rename(value = FST), 
+                                             Name_variable1 = "group", 
+                                             Name_variable2 = "id", 
+                                             test.name = "kruskal")
+    
+    names(sig_label$significant.label) <- str_replace_all(names(sig_label$significant.label), 
+                                                          c("variable1" = "group", 
+                                                            "variable2" = "id"))
+
+# plot
+    # each features
+    p <- tmp %>%
+      ggplot(aes(y = FST, x = id, color = id)) +
+      geom_hline(yintercept = tmp_label$Median[tmp_label$id == "Random"], 
+                 linetype = 2, size = 0.5, color = "grey35") +
+      geom_violin(fill = "transparent", scale = "width", width = 0.75, size = 0.3) + 
+      geom_boxplot(width = 0.1, outlier.shape = NA, fill  = "transparent") +
+      # facet_grid(region ~ ., scales = "free_y") +
+      # ggtitle(i) +
+      coord_cartesian(ylim = c(0, 1.05)) +
+      ylab(expression(italic(F[ST]))) +
+      xlab("Features") +
+      scale_y_sqrt(breaks = c(0.01, 0.05, 0.1, 0.2, 0.4, 0.8, 1)) +
+      # labs(caption = "Kruskal-Wallis test, p < 0.05") +
+      # scale_y_log10() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "none",
+            axis.title.x = element_blank()) + 
+      toolkit_tyj$theme_my +
+      # geom_point(data = tmp_label, aes(x = Median, y = id), color = "red", size = 0.5) + 
+      # geom_label(data = tmp_label, aes(x = 0.02, y = id, label = label), 
+      #            color = "grey35", size = 5/.pt, 
+      #            label.padding = unit(0.03, units = "cm"), 
+      #            fill = "transparent") + 
+      geom_text(data = tmp_label, 
+                aes(y = 0.9, x = id, label = str_c("(", Num, ")")), 
+                color = "black", size = 5/.pt) + 
+      geom_text(data = sig_label$significant.label, 
+                aes(y = 1.05, x = id, label = value), 
+                color = "black", size = 6/.pt) + 
+      scale_color_manual(values = c(c(pal_npg(palette = "nrc")(4)[c(1,2,4)], "grey45")[1], rep("grey35", 100))) + 
+      scale_x_discrete(labels = function(x){str_replace_all(x, "_", "\n")})
+
+    toolkit_tyj$SavePlot(filename_prefix = paste("FST_", i, "_all_regions", sep = ""),
+                           width = 8, height = 6, plot = p, bg = "transparent",
+                           device = "png")
+  }
+
+
+## plot features X En -------------------------------
+
+  for (i in unique(cre_score$group)) {
+    # i <- unique(cre_score$group)[1]
+    cat(i, ";  ")
+    ## each CRE/genomic features
+    tmp <- cre_score %>% 
+      dplyr::filter(group == i, 
+                    str_detect(id, "_", negate = F),
+                    str_detect(id, "Enhancer_|CorePro", negate = T)) %>%
+      dplyr::mutate(id = str_replace_all(id, c("cSTARR-seq" = "Enhancer_STARRseq", 
+                                               "Interneric" = "Intergenic",
+                                               "ProEnlarge" = "Promoter")),
+                    Features = str_replace_all(id, "^(.+)_.+$", "\\1"), 
+                    Type = ifelse(str_detect(id, "noSTARRseq"), "NO", "YES"),
+                    Type = factor(Type, levels = c("YES", "NO")),
+                    Features = factor(Features, levels = Feature_level)
+                    ) %>%
+      ungroup
+
+    unique(tmp$Features)
+
+    # summary
+    tmp_label <- tmp %>% 
+      group_by(group, Features, Type) %>%
+      summarise(Median = round(median(FST, na.rm = T), digits = 4),
+                Num = n()) %>%
+      dplyr::mutate(label = str_c("Median=", Median, "\nN=", Num, sep = ""))
+    
+    # sig label
+    sig_label <- toolkit_tyj$Multicomparison(Data_comapre = dplyr::select(tmp, Type, Features, FST) %>% 
+                                                 dplyr::rename(value = FST), 
+                                             Name_variable1 = "Features", 
+                                             Name_variable2 = "Type", 
+                                             test.name = "kruskal")
+    names(sig_label$significant.label) <- str_replace_all(names(sig_label$significant.label), 
+                                                          c("variable1" = "Features", 
+                                                            "variable2" = "Type"))
+    sig_label$significant.label$Features <- factor(sig_label$significant.label$Features, levels = Feature_level)
+    
+# plot
+    # each features
+    p <- tmp %>%
+      ggplot(aes(y = FST, x = Type, color = Type)) +
+      geom_hline(yintercept = tmp_label$Median[tmp_label$id == "Random"], 
+                 linetype = 2, size = 0.5, color = "grey35") +
+      geom_violin(fill = "transparent", scale = "width", width = 0.75, size = 0.3) + 
+      geom_boxplot(width = 0.1, outlier.shape = NA, fill  = "transparent") +
+      facet_grid(. ~ Features, scales = "free_y") +
+      # ggtitle(i) +
+      coord_cartesian(ylim = c(0, 1.05)) +
+      ylab(expression(italic(F[ST]))) +
+      xlab("Features") +
+      scale_y_sqrt(breaks = c(0.01, 0.05, 0.1, 0.2, 0.4, 0.8, 1)) +
+      # labs(caption = "Kruskal-Wallis test, p < 0.05") +
+      # scale_y_log10() +
+      theme(panel.spacing = unit(0.04, "cm"), 
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.position = "bottom",
+            axis.title.x = element_blank(),
+            legend.margin = margin(-10, 0,0,0),
+            legend.key.size = unit(0.3, "cm")) +
+      toolkit_tyj$theme_my +
+      # geom_point(data = tmp_label, aes(x = Median, y = Type), color = "red", size = 0.5) + 
+      # geom_label(data = tmp_label, aes(x = 0.02, y = Type, label = label), 
+      #            color = "grey35", size = 5/.pt, 
+      #            label.padding = unit(0.03, units = "cm"), 
+      #            fill = "transparent") + 
+      geom_text(data = tmp_label,
+                aes(y = 0.9, x = Type, label = str_c("(", Num, ")")), 
+                color = "black", size = 4/.pt) + 
+      geom_text(data = sig_label$significant.label, 
+                aes(y = 1.05, x = Type, label = value), 
+                color = "black", size = 6/.pt) + 
+      scale_color_manual(values = c(c(pal_npg(palette = "nrc")(4)[c(1,2,4)], "grey45")[1], rep("grey35", 100))) + 
+      guides(color = guide_legend(title = "Overlapped with enhancer"))
+
+    toolkit_tyj$SavePlot(filename_prefix = paste("FST_", i, "_all_regions_En", sep = ""),
+                           width = 9, height = 6, plot = p, bg = "transparent",
+                           device = "png")
+  }
+
+
+```
+
+
+
+
+# SNP density
+
+Relative dentisity of SNP in according to CREs.
+Attention: The distribution profile of SNPs according to the center of CREs may influenced by the density (totoal number) of CREs on the chromosome. Thus, different size random must be used.
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  density_all <- fread("./R8.conservation/SNP_Density_according_to_enhancers_20210517.csv") %>%
+    rbind(., fread("./R8.conservation/SNP_Density_according_to_enhancers_clusters_20210517.csv"))
+  table(density_all$method)
+  Bins_lev <- unique(density_all$Bins)
+  density_all$Bins <- factor(density_all$Bins, levels = Bins_lev)
+  
+  # plot Enhancer_STARRseq + Kmeans clusters
+  density_all %>%
+    dplyr::filter(str_detect(method, "(Kmeans|Cluster-0|Enhancer_STARRseq)")) %>%
+    dplyr::mutate(x = as.numeric(Bins), 
+                  method = str_replace_all(method, "KmeansCluster-", "C"),
+                  method = str_replace_all(method, "Enhancer_STARRseq", "All enhancers")) %>%
+    ggplot(aes(x = x, y = density)) + 
+      # geom_point()+
+      ggformula::geom_spline(aes(color = method, linetype = method, size = method, alpha = method)) +
+      toolkit_tyj$theme_my + 
+      theme(legend.position = c(0.21, 0.8), 
+            legend.title = element_blank(), 
+            legend.key.size = unit(0.3, units = "cm"), 
+            legend.key.width = unit(0.5, units = "cm")) + 
+      xlab("Posotion") + 
+      ylab("Relative density of SNPs") + 
+      scale_x_continuous(breaks = c(0, 50, 100), 
+                         labels = c("-5kb", "Center", "5kb")) + 
+      # scale_color_npg() + 
+      scale_color_manual(values = c(toolkit_tyj$AtEn_EnPro_Color[1], toolkit_tyj$AtEn_KmeanC_color)) + 
+      scale_linetype_manual(values = c(2, 1,1,1,1)) + 
+      scale_size_manual(values = c(0.4, rep(0.6, 4))) + 
+      scale_alpha_manual(values = c(1, rep(0.6, 4)))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R8.conservation/Density_of_SNP_small_Indels_Enhancers_STARRseq_KmeansCluster_deductRandom",
+                       width = 8, height = 5.45, device = c("png", "pdf"))
+
+```
+
+
+# Tree
+
+## 63 species
+Not run.
+only .maf provied by the PlantRegMap.
+
+## 1135 A.t accessions.
+
+Step
+  1. thin vcf files
+  2. generate tree based on vcf file using "vk tree nj"
+  3. illustrated in the iTol.
+
+### prepare color for iTol.
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  meta_info <- fread("./refgenome/1001genomes/At1135_accessions.csv")
+  table(meta_info$`Admixture Group`)
+  display.brewer.all()
+  
+  meta_info$colorTmp <- brewer.pal(12, "Paired")[as.numeric(as.factor(meta_info$`Admixture Group`))]
+  show_col(unique(meta_info$colorTmp))
+  
+  # fwrite(meta_info, file = "./refgenome/1001genomes/At1135_accessions_AdmixtureGroup_2_color.csv")
+  
+  meta_info %>%
+    dplyr::select(`Admixture Group`, colorTmp) %>%
+    distinct() %>%
+    arrange(`Admixture Group`)
+  
+```
+
+
+
+
+
+
+
+
+
+
+

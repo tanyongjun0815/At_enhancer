@@ -1,0 +1,1514 @@
+---
+title: "Fig2&S2"
+author: "TYJ"
+date: '2022-05-18'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, background="transparent", fig.align='center' }
+knitr::opts_chunk$set(echo = F, include = T, highlight = T, warning = F, fig.align = "c")
+options(knitr.kable.NA = '')
+library(pheatmap)
+library(grid)
+library(data.table)
+library(GenomicRanges)
+library(tidyverse)
+source("D:/SUST/code/TanYongjun_code.R")
+```
+
+## TS/HK enhancer number
+Classify enhancers into two groups: TS and HK.
+Identification was accomplished in `7.1_prepare TS/HK enhancers for GAT (CRE vs DAP-seq peaks)`.
+Analysis these two enhancer groups
+
+### . Number/percentage of TS and HK genes.
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  # TS and HK gene (-300bp, TSS-TTS, 300bp)
+  hk_gene <- fread("./refgenome/Arabidopsis_thaliana_HouseKeeping_genes_10.1111.tpj.13415.tsv") %>%
+    dplyr::mutate(gene_id = str_replace_all(`Transcript ID`, "^(.+)\\.\\d+$", "\\1"))
+  library(TxDb.Athaliana.BioMart.plantsmart28)
+  gene_table <- genes(TxDb.Athaliana.BioMart.plantsmart28) %>%
+    as.data.frame() %>%
+    dplyr::mutate(Type = ifelse(gene_id %in% hk_gene$gene_id, "House-keeping", "Tissue-specific")) %>%
+    dplyr::select(gene_id, Type) %>%
+    distinct()
+  
+  gene_table %>%
+    group_by(Type) %>%
+    dplyr::summarise(Num = n()) %>%
+    ungroup() %>%
+    dplyr::mutate(Rate = Num / sum(Num),
+                  label = str_c(Type, "\n", Num),
+                  label1 = str_c(Type, " gene\nN=", Num, "\n", scales::percent(Rate, accuracy = 0.01))) %>%
+    ggplot(aes(x = 1, y = Rate, fill = Type)) + 
+      geom_col(alpha = 0.5, color = "transparent")+ 
+      toolkit_tyj$theme_my + 
+      # scale_fill_manual(values = toolkit_tyj$cre_color_fill[c(2,4)]) +
+      ylab("Number of genes") +
+      theme(# legend.position = c(0.92, 0.88),
+            legend.position = "none",
+            legend.title = element_blank(),
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            panel.spacing.x = unit(0.08, "cm"),
+            legend.margin = margin(-10, 0, 0, 0), panel.border = element_blank()) + 
+      scale_fill_brewer(palette = "Dark2") +
+      scale_color_brewer(palette = "Dark2") +
+      geom_text(aes(label = label1, y = Rate/2), size = 6/.pt) +
+      # scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+      coord_polar(theta = "y") 
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Percentage_TS_HK_genes_20220518",
+  #                      width = 4, height = 4)
+```
+
+### . TS/HK X Kmeans cluster
+Percentage of enhancers located near to TS and HK genes.
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  tshk_enhancer <- fread("./R7.TFs/bed_files/Enhancer_TSHK_gene_up500_down500_20220517.bed.gz") %>%
+    dplyr::rename(seqnames = V1, start = V2, end = V3, Gene_type = V4)
+  En_all <- fread("Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_IntronicEn_TE_20220424.csv.gz") %>%
+    dplyr::filter(method == "cSTARR-seq", enrichment > 1.3)  %>%
+    dplyr::mutate(seqnames = str_c("chr", seqnames)) %>%
+    left_join(., tshk_enhancer) %>%
+    dplyr::select(seqnames:end, clusterK4, Gene_type) %>%
+    distinct() 
+    
+  df <- En_all %>%
+    dplyr::mutate(Gene_type = ifelse(is.na(Gene_type), "Distal-enhancer", Gene_type)) %>%
+    dplyr::mutate(Gene_type = str_replace_all(Gene_type, c("HKenhancer" = "House-keeping enhancer",
+                                                "TSenhancer" = "Tissue-specific enhancer",
+                                                "Distal-enhancer" = "Distal enhancer")),
+                  Gene_type = factor(Gene_type, levels = c("House-keeping enhancer", "Tissue-specific enhancer", 
+                                                "Distal enhancer", "Random"))) %>%
+    dplyr::filter(clusterK4 != 0) %>%
+    dplyr::mutate(clusterK4 = str_c("C", clusterK4))
+  table(df$clusterK4, df$Gene_type)
+  
+  df_tmp <- df %>%
+    group_by(clusterK4, Gene_type) %>%
+    count() %>%
+    group_by(Gene_type) %>%
+    arrange(Gene_type, desc(clusterK4)) %>%
+    dplyr::mutate(Total = sum(n), Rate = n/Total,
+                  xlab = str_c(Gene_type, " (", Total, ")"),
+                  ypos = cumsum(Rate) -  Rate/2)
+  df_tmp$xlab <- factor(df_tmp$xlab, unique(df_tmp$xlab))
+  p <- df_tmp %>%
+    ggplot(aes(x = xlab, y = Rate, fill = clusterK4)) + 
+      geom_col() + 
+      toolkit_tyj$theme_my + 
+      scale_fill_manual(values = toolkit_tyj$AtEn_KmeanC_color) + 
+      scale_x_discrete(labels = function(x){str_wrap(x, width = 20)}) + 
+      scale_y_continuous(labels = scales::percent) + 
+      ylab("Percentage") + 
+      theme(axis.title.x = element_blank(),
+            legend.title = element_blank(),
+            legend.key.size = unit(0.3, "cm"),
+            legend.position = "right",
+            legend.margin = margin(0, 0,0,-10),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) 
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Percentage_Kmeans_groups_in_HK_TS_Distal_enhancers",
+  #                      width = 3.9, height = 4.65, plot = p)
+  
+  p + geom_text(aes(x = xlab, y = ypos, label = scales::percent(Rate, accuracy = 0.01)),
+                size = 5/.pt) 
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Percentage_Kmeans_groups_in_HK_TS_Distal_enhancers_labeled",
+  #                      width = 3.9, height = 4.65)
+
+```
+
+# GO of genes flanking to each Cluster
+
+GO enrichement analysis of genes which were hit by each cluster of enhancers in gene body or promoter (2kb).
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+# prepare genes - enhancer table 
+  hk_gene <- fread("./refgenome/Arabidopsis_thaliana_HouseKeeping_genes_10.1111.tpj.13415.tsv") %>%
+    dplyr::mutate(gene_id = str_replace_all(`Transcript ID`, "^(.+)\\.\\d+$", "\\1"))
+  library(TxDb.Athaliana.BioMart.plantsmart28)
+  gene_table <- genes(TxDb.Athaliana.BioMart.plantsmart28) %>%
+    as_tibble() %>%
+    dplyr::mutate(GeneType = ifelse(gene_id %in% hk_gene$gene_id, "House-keeping", "Tissue-specific"),
+                  start = ifelse(strand == "+", start - 2000, start),
+                  end = ifelse(strand == "-", end + 2000, end)) %>%
+    dplyr::select(seqnames:end, strand, gene_id, GeneType) %>%
+    dplyr::mutate(seqnames = str_c("chr", as.character(seqnames))) %>%
+    distinct() %>%
+    dplyr::mutate(subjectHits = 1:nrow(.))
+  
+  En_all <- fread("Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_IntronicEn_TE_20220424.csv.gz") %>%
+    dplyr::filter(method == "cSTARR-seq", enrichment > 1.3)  %>%
+    dplyr::mutate(seqnames = str_c("chr", seqnames)) %>%
+    dplyr::mutate(queryHits = 1:nrow(.)) %>%
+    dplyr::select(seqnames:end, clusterK4, clusterK7, ClusterActivity, queryHits)
+  
+  df <- En_all %>%
+    makeGRangesFromDataFrame() %>%
+    GenomicRanges::resize(width = 1, fix = "center") %>%
+    findOverlaps(., makeGRangesFromDataFrame(gene_table)) %>%
+    as_tibble() %>%
+    left_join(., dplyr::select(gene_table, start, end, gene_id, subjectHits, GeneType)) %>%
+    left_join(., dplyr::rename(En_all, ENstart = start, ENend = end))
+  
+  table(df$clusterK4, df$GeneType)
+
+# percentage of TS/HK genes located flanking to each cluster of enhancers.
+  df %>%
+    dplyr::count(GeneType, clusterK4) %>%
+    group_by(clusterK4) %>%
+    dplyr::mutate(Rate = n / sum(n), clusterK4 = str_c("C", clusterK4)) %>%
+    dplyr::filter(clusterK4 != "C0", GeneType == "House-keeping") %>%
+    ggplot(aes(x = clusterK4, y = Rate, fill = clusterK4)) +
+      geom_col(alpha = 4/5) + 
+      toolkit_tyj$theme_my + 
+      scale_y_continuous(labels = scales::percent) +
+      ylab("Percentage of house-keeping genes\nassociated with enhancers") + 
+      xlab("Enhancer clusters") +
+      scale_fill_manual(values = toolkit_tyj$AtEn_KmeanC_color) +
+      geom_text(aes(y = Rate + 0.0008, label = scales::percent(Rate, accuracy = 0.01)),
+                size = 6/.pt) +
+      theme(legend.position = c(0.75, 0.85), 
+            legend.title = element_blank(),
+            legend.key.size = unit(0.3, "cm"))
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R5.chromatin_states/GO_KmeansClusters/Percentage_of_HKgenes_associated_with_each_cluster",
+  #                      width = 6, height = 6)
+  
+# GO
+  library(org.At.tair.db)
+  library(clusterProfiler)
+  
+  # list of genes
+  Gene_ls <- df %>%
+    dplyr::filter(clusterK4 != 0) %>%
+    dplyr::mutate(clusterK4 = str_c("C", clusterK4)) %>%
+    split(., .$clusterK4) %>%
+    map(., function(x){x$gene_id %>% unlist() %>% unique()})
+  
+  Gene_ls <- df %>%
+    dplyr::filter(clusterK4 != 0) %>%
+    dplyr::mutate(clusterK4 = str_c("C", clusterK4)) %>%
+    split(., f = list(.$clusterK4, .$GeneType)) %>%
+    map(., function(x){x$gene_id %>% unlist() %>% unique()}) %>%
+    c(., Gene_ls)
+  
+  map_int(Gene_ls, length)
+  
+  # enrichment
+  ego_list <- Gene_ls %>%
+    map(.x = ., .f = function(y){ # error reported when use future_map() in this step.
+                                      enrichGO(gene = y,
+                                              keyType = "TAIR",
+                                              pvalueCutoff = 0.05,
+                                              pAdjustMethod = "BH",
+                                              OrgDb = org.At.tair.db,
+                                              ont = "All",
+                                              readable = T
+                                              ) %>% return()
+                                     }
+      )
+  
+  ego_df <- ego_list %>%
+    map_dfr(., function(x){
+      x@result %>%
+        as_tibble %>%
+        return()
+    }, .id = "Groups") %>%
+    dplyr::filter(str_detect(Groups, "\\-", negate = T)) %>%
+    dplyr::mutate(facetID = str_c(Groups, ONTOLOGY, sep = " "),
+                  NumEnrichGenePH = str_replace_all(GeneRatio, "^(\\d+)\\/(\\d+)$", "\\1") %>% as.numeric(),
+                  NumEnrichGeneAll = str_replace_all(GeneRatio, "^(\\d+)\\/(\\d+)$", "\\2") %>% as.numeric(),
+                  NumGenePH = str_replace_all(BgRatio, "^(\\d+)\\/(\\d+)$", "\\1") %>% as.numeric(),
+                  NumGeneAll = str_replace_all(BgRatio, "^(\\d+)\\/(\\d+)$", "\\2") %>% as.numeric(),
+                  enrichment = (NumEnrichGenePH / NumEnrichGeneAll) / (NumGenePH / NumGeneAll),
+                  Description = str_replace_all(Description, ",+", ""),
+                  Description = fct_reorder(Description, enrichment, .fun = mean)) %>%
+    group_by(facetID) %>%
+    arrange(desc(enrichment)) %>%
+    dplyr::filter(enrichment > 2,
+                  p.adjust < 0.01)
+  
+  table(ego_df$Groups, ego_df$ONTOLOGY)
+  
+  ego_df %>%
+    # slice_head(n = 10) %>%
+    ggplot(aes(x = enrichment, y = Description, color = enrichment, size = enrichment)) + 
+      # geom_col() + 
+      geom_point() + 
+      # facet_grid(Groups ~ ., scales = "free", space = "free") +
+      facet_wrap("facetID", scales = "free", ncol = 3) +
+      scale_y_discrete(labels = function(x){str_wrap(x, width = 50)}) + 
+      toolkit_tyj$theme_my +
+      scale_color_carto_c(palette = "Temps")
+  
+## plot -------------------------
+  # C1
+  ego_df %>%
+    dplyr::filter(Groups == "C1") %>%
+    dplyr::rename(Enrichment = enrichment) %>%
+    ggplot(aes(x = Enrichment, y = Description, color = Enrichment, size = Enrichment)) + 
+      # geom_col() + 
+      geom_point() + 
+      facet_grid(ONTOLOGY ~ ., scales = "free", space = "free") +
+      scale_y_discrete(labels = function(x){str_wrap(x, width = 50)}, expand = expansion(add = c(1, 1))) + 
+      scale_x_continuous(expand = expansion(add = c(0.5, 0.5))) +
+      toolkit_tyj$theme_my +
+      scale_color_carto_c(palette = "Temps") + 
+      theme(legend.margin = margin(-8,0,0,0),
+            legend.position = "bottom",
+            legend.key.size = unit(0.3, "cm")) +
+      guides(size = guide_legend(title = element_blank()),
+             color = guide_legend(title = element_blank()))
+  toolkit_tyj$SavePlot(filename_prefix = "./R5.chromatin_states/GO_KmeansClusters/Enriched_GO_terms_C1_20220811",
+                       width = 10, height = 14)
+  
+  # C3
+  ego_df %>%
+    dplyr::filter(Groups == "C3") %>%
+    dplyr::rename(Enrichment = enrichment) %>%
+    ggplot(aes(x = Enrichment, y = Description, color = Enrichment, size = Enrichment)) + 
+      # geom_col() + 
+      geom_point() + 
+      facet_grid(ONTOLOGY ~ ., scales = "free", space = "free") +
+      scale_y_discrete(labels = function(x){str_wrap(x, width = 40)}, expand = expansion(add = c(1, 1))) + 
+      scale_x_continuous(expand = expansion(add = c(0.5, 0.5))) +
+      toolkit_tyj$theme_my +
+      scale_color_carto_c(palette = "Temps") + 
+      theme(legend.margin = margin(-8,0,0,0),
+            legend.position = "bottom",
+            legend.key.size = unit(0.3, "cm")) +
+      guides(size = guide_legend(title = element_blank()),
+             color = guide_legend(title = element_blank()))
+  toolkit_tyj$SavePlot(filename_prefix = "./R5.chromatin_states/GO_KmeansClusters/Enriched_GO_terms_C3_20220811",
+                       width = 9, height = 12)
+  
+  # C4
+  ego_df %>%
+    dplyr::filter(Groups == "C4") %>%
+    dplyr::rename(Enrichment = enrichment) %>%
+    ggplot(aes(x = Enrichment, y = Description, color = Enrichment, size = Enrichment)) + 
+      # geom_col() + 
+      geom_point() + 
+      facet_grid(ONTOLOGY ~ ., scales = "free", space = "free") +
+      scale_y_discrete(labels = function(x){str_wrap(x, width = 40)}, expand = expansion(add = c(1, 1))) + 
+      scale_x_continuous(expand = expansion(add = c(0.5, 0.5))) +
+      toolkit_tyj$theme_my +
+      scale_color_carto_c(palette = "Temps") + 
+      theme(legend.margin = margin(-8,0,0,0),
+            legend.position = "bottom",
+            legend.key.size = unit(0.3, "cm")) +
+      guides(size = guide_legend(title = element_blank()),
+             color = guide_legend(title = element_blank()))
+  toolkit_tyj$SavePlot(filename_prefix = "./R5.chromatin_states/GO_KmeansClusters/Enriched_GO_terms_C4_20220811",
+                       width = 9, height = 14)
+  NA
+```
+
+
+# Distribution (TSS-TTS)
+
+### .1 Eanhancer_STARRseq + Random
+*Add intronic enhancer 202106*
+```{r}
+# calculate the relative bins according to gene body.
+rm(list = ls())
+load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+# load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_iSTARR_cSTARR_20210415.bin")
+source("D:/SUST/code/TanYongjun_code.R")
+anno_table <- anno_list %>% 
+  map(., as.data.frame) %>%
+  purrr::reduce(rbind) %>%
+  toolkit_tyj$relativeBins2TSS(flank.region = 5000, bins_flank = 50, bins_gene = 50, flank_scale = 1) %>%
+  dplyr::mutate(method = str_replace_all(method, c("IntronicEnhancer" = "Enhancer_Meng2021", 
+                                           "cSTARR-seq" = "Enhancer_STARRseq")))
+
+### Enhancer, PAS, Random------------
+# normalized to random
+  df <- anno_table %>%
+    dplyr::select(method:Type, relativeBins) %>%
+    dplyr::mutate(Type = str_replace_all(method, "-", "_")) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, Type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = Type, 
+                values_from = Num, values_fill = 0) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR|Random)")) %>%
+    pivot_wider(id_cols = c(relativeBins), names_from = name, values_from = value) 
+  
+  df <- cbind(df$relativeBins, scale(df[,2:ncol(df)]))%>%
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR)")) %>%
+    dplyr::mutate(NormedValue = value - Random)
+  
+  # plot all
+  library(ggformula)
+  df %>%
+    dplyr::filter(str_detect(name, "(iSTARR|PAS)", negate = T)) %>%
+    dplyr::mutate(name = factor(name, levels = c("Enhancer_STARRseq", "Enhancer_Zhu2015", 
+                                                 "Enhancer_Wang2019", "Enhancer_Meng2021", 
+                                                 "PAS", "iSTARR-seq", "Random"))) %>%
+    dplyr::filter(str_detect(name, "Random|STARR|Enhancer")) %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.2, ymax = -2.8, fill = "grey80") +
+      geom_text(x = 25, y = -3, label = "Gene body", size = 1.8, color = "grey30") +
+      geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      # geom_line() +
+      geom_spline(aes(x = relativeBins, color = name, y = NormedValue, linetype = name)) +
+      # scale_color_manual(values = pal_npg(palette = "nrc")(9)[c(1, 2, 3, 4, 6)]) +
+      scale_color_npg() +
+      scale_linetype_manual(values = c(1,2,2,2,2)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.83, 0.22),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          legend.key.height = unit(0.25, units = "cm")) 
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_TTS_TSS_STARR_DHS_20210606",
+  #                      width = 8, height = 6)
+
+  
+# Not normalized
+  df <- anno_table %>%
+    dplyr::select(method:Type, relativeBins) %>%
+    dplyr::mutate(Type = str_replace_all(method, "-", "_")) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, Type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = Type, 
+                values_from = Num, values_fill = 0) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR|Random)")) %>%
+    pivot_wider(id_cols = c(relativeBins), names_from = name, values_from = value) 
+  
+  df <- cbind(df$relativeBins, scale(df[,2:ncol(df)]))%>%
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    pivot_longer(cols = matches("(Enhancer|PAS|STARR|Random)")) 
+  
+  # plot all
+  library(ggformula)
+  df %>%
+    dplyr::filter(str_detect(name, "(iSTARR|PAS)", negate = T)) %>%
+    dplyr::mutate(name = factor(name, levels = c("Enhancer_STARRseq", "Enhancer_Zhu2015", 
+                                                 "Enhancer_Wang2019", "Enhancer_Meng2021", 
+                                                 "PAS", "iSTARR-seq", "Random"))) %>%
+    dplyr::filter(str_detect(name, "Random|STARR")) %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.2, ymax = -2.8, fill = "grey80") +
+      geom_text(x = 25, y = -3, label = "Gene body", size = 1.8, color = "grey30") +
+      # geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      # geom_line() +
+      geom_spline(aes(x = relativeBins, color = name, y = value, linetype = name)) +
+      # scale_color_manual(values = pal_npg(palette = "nrc")(9)[c(1, 2, 3, 4, 6)]) +
+      scale_color_manual(values = toolkit_tyj$AtEn_YNRandom_color[c(1,2)]) +
+      scale_y_continuous(expand = expansion(add = c(0.4, 0.9))) +
+      scale_linetype_manual(values = c(1,2,2,2,2)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.7, 0.88),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          legend.key.height = unit(0.25, units = "cm"))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_notNormed_TTS_TSS_STARR_DHS_20210606",
+                       width = 5.5, height = 4.28)
+
+```
+
+
+### .2 enhancer cluster
+
+```{r}
+## calculate the relative bins according to gene body, and prepare.
+  rm(list = ls())
+  load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+  anno_list <- anno_list[c("cSTARR-seq", "Random")]
+  source("D:/SUST/code/TanYongjun_code.R")
+  
+  # load cluster information
+  enhancer <- fread("./Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans_4&7_RPKM_20210321.csv.gz") %>%
+    dplyr::select(seqnames, startBK, endBK, method, clusterK4, clusterK7) %>%
+    split(.$method)
+  for (i in names(anno_list)) {
+    anno_list[[i]] <- full_join(as.data.frame(anno_list[[i]]), enhancer[[i]])
+  }
+  
+  # list to table
+  anno_table <- anno_list %>% 
+    map(., as.data.frame) %>%
+    purrr::reduce(rbind) %>% 
+    dplyr::filter(str_detect(method, "(cSTARR-seq|Random)")) %>%
+    toolkit_tyj$relativeBins2TSS(flank.region = 5000, bins_flank = 50, bins_gene = 50, flank_scale = 1) %>%
+    mutate(clusterK4 = as.character(clusterK4), clusterK7 = as.character(clusterK7)) %>%
+    full_join(., dplyr::mutate(., clusterK4 = "All", 
+                       clusterK7 = "All")) %>%
+    dplyr::filter(!(method == "Random"& clusterK4 == 0)) %>%
+    dplyr::mutate(clusterK4 = ifelse(method == "Random", "Random", clusterK4),
+                  clusterK7 = ifelse(method == "Random", "Random", clusterK7))
+
+
+### each cluster of enhancer K=4 (deduct random)
+  # normalized to random
+  df <- anno_table %>%
+    dplyr::select(clusterK4, relativeBins) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, clusterK4) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = clusterK4, 
+                values_from = Num, values_fill = 0)
+  df <- cbind(df$relativeBins, scale(as.matrix(df[,2:ncol(df)]))) %>% 
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    mutate(`C0` = `0` - Random,
+           `C1` = `1` - Random,
+           `C2` = `2` - Random,
+           `C3` = `3` - Random,
+           `C4` = `4` - Random,
+           `All` = `All` - Random,
+           Random = 0) %>%
+    pivot_longer(cols = -relativeBins, 
+                 names_to = "Type", 
+                 values_to = "Count") %>%
+    dplyr::filter(str_detect(Type, "(All|Random|C)"))
+    
+  
+  # plot
+  library(ggformula)
+  df %>%
+    dplyr::filter(Type != "Random", Type != "C0") %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.4, ymax = -3, fill = "grey80") +
+      geom_text(x = 25, y = -3.2, label = "Gene body", size = 2.5, color = "grey30") +
+      geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      geom_spline(aes(x = relativeBins, color = Type, y = Count, linetype = Type)) +
+      # geom_line(aes(x = relativeBins, color = Type, y = Count)) +
+      scale_color_manual(values = c("grey45", pal_npg(palette = "nrc")(4))) +
+      # scale_color_npg() +
+      scale_linetype_manual(values = c(2, 1,1,1,1)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.83, 0.27),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+      
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_TTS_TSS_cSTARRseq1.3_clusterK4_20210322",
+                       width = 8, height = 6)
+
+### each cluster of enhancer K=4 (not normed)
+  df <- anno_table %>%
+    dplyr::select(clusterK4, relativeBins) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, clusterK4) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = clusterK4, 
+                values_from = Num, values_fill = 0)
+  df <- cbind(df$relativeBins, scale(as.matrix(df[,2:ncol(df)]))) %>% 
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    # mutate(`Cluster-0` = `0` - Random,
+    #        `Cluster-1` = `1` - Random,
+    #        `Cluster-2` = `2` - Random,
+    #        `Cluster-3` = `3` - Random,
+    #        `Cluster-4` = `4` - Random,
+    #        `All` = `All` - Random,
+    #        Random = 0) %>%
+    dplyr::rename(C0 = `0`,
+                  C1 = `1`,
+                  C2 = `2`,
+                  C3 = `3`,
+                  C4 = `4`,
+                  All = All) %>%
+    pivot_longer(cols = -relativeBins, 
+                 names_to = "Type", 
+                 values_to = "Count") %>%
+    dplyr::filter(str_detect(Type, "(All|Random|C)"))
+    
+  
+  # plot
+  library(ggformula)
+  df %>%
+    dplyr::filter(str_detect(Type, "All|C0", negate = T)) %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.4, ymax = -3, fill = "grey80") +
+      geom_text(x = 25, y = -3.2, label = "Gene body", size = 2.5, color = "grey30") +
+      # geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      geom_spline(aes(x = relativeBins, color = Type, y = Count, linetype = Type)) +
+      # geom_line(aes(x = relativeBins, color = Type, y = Count)) +
+      scale_color_manual(values = c(toolkit_tyj$AtEn_KmeanC_color, "grey35")) +
+      # scale_color_npg() +
+      scale_linetype_manual(values = c(1,1,1,1,2)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.83, 0.64),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+      
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_NotNormed_TTS_TSS_cSTARRseq1.3_clusterK4_20210322",
+                       width = 5.5, height = 4.28)
+
+```
+
+### .3 Activity cluster
+
+```{r}
+## calculate the relative bins according to gene body, and prepare.
+  rm(list = ls())
+  load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+    anno_list <- anno_list[c("cSTARR-seq", "Random")]
+  source("D:/SUST/code/TanYongjun_code.R")
+  
+  # load cluster information
+  enhancer <- fread("./Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_20210415.csv.gz") %>%
+    dplyr::select(seqnames, startBK, endBK, method, ClusterActivity) %>%
+    split(.$method)
+  for (i in names(anno_list)) {
+    anno_list[[i]] <- full_join(as.data.frame(anno_list[[i]]), enhancer[[i]])
+  }
+  
+  # list to table
+  anno_table <- anno_list %>% 
+    purrr::reduce(rbind) %>%
+    dplyr::filter(str_detect(method, "(cSTARR-seq|Random)"), 
+                  !(method == "cSTARR-seq" & enrichment <= 1.3)) %>%
+    dplyr::mutate(ClusterActivity = ifelse(is.na(ClusterActivity), "Random", ClusterActivity)) %>%
+    toolkit_tyj$relativeBins2TSS(flank.region = 5000, bins_flank = 50, bins_gene = 50, flank_scale = 1) %>%
+    full_join(., dplyr::filter(., ClusterActivity != "Random") %>% dplyr::mutate(ClusterActivity = "All")) 
+
+### each Activity cluster
+  # normalized to random
+  df <- anno_table %>%
+    dplyr::select(ClusterActivity, relativeBins) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, ClusterActivity) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = ClusterActivity, 
+                values_from = Num, values_fill = 0)
+  df <- cbind(df$relativeBins, scale(as.matrix(df[,2:ncol(df)]))) %>% 
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    mutate(`Part1` = `Part1` - Random,
+           `Part2` = `Part2` - Random,
+           `Part3` = `Part3` - Random,
+           `Part4` = `Part4` - Random,
+           `Part5` = `Part5` - Random,
+           `All` = `All` - Random,
+           Random = 0) %>%
+    pivot_longer(cols = -relativeBins, 
+                 names_to = "Type", 
+                 values_to = "Count") %>%
+    dplyr::filter(str_detect(Type, "(All|Random|Part)"))
+    
+  
+  # plot
+  library(ggformula)
+  df %>%
+    dplyr::mutate(Type = factor(Type, levels = c("Part1", "Part2", "Part3", "Part4", "Part5", "All", "Random"))) %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.1, ymax = -2.8, fill = "grey80") +
+      geom_text(x = 25, y = -2.95, label = "Gene body", size = 1, color = "grey30") +
+      # geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      geom_spline(aes(x = relativeBins, color = Type, y = Count, linetype = Type)) +
+      # geom_line(aes(x = relativeBins, color = Type, y = Count)) +
+      scale_color_manual(values = c(carto_pal(5, "Temps"), "grey35", "grey70")) +
+      # scale_color_npg() +
+      scale_linetype_manual(values = c(1,1,1,1,1,2,3)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.89, 0.32),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+      
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_TTS_TSS_cSTARRseq1.3_ClusterActivity_deduct_Random_20210509",
+                       width = 8, height = 6)
+
+```
+
+### .4 TS/HK enhancer
+
+```{r}
+## calculate the relative bins according to gene body, and prepare.
+  rm(list = ls())
+  load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+  source("D:/SUST/code/TanYongjun_code.R")
+    
+  # load enhancer info (located near tissue-specific or house-keeping genes)
+  tshk_enhancer <- fread("./R7.TFs/bed_files/Enhancer_TSHK_gene_up500_down500_20220517.bed.gz") %>%
+    dplyr::rename(seqnames = V1, start = V2, end = V3, Gene_type = V4)
+  
+  anno_table <- anno_list[c("cSTARR-seq", "Random")] %>%
+    map_dfr(., as.data.frame) %>%
+    dplyr::mutate(seqnames = str_c("chr", seqnames), 
+                  start = startBK, end = endBK) %>%
+    left_join(., tshk_enhancer)
+  table(anno_table$method, anno_table$Gene_type)
+  
+  # list to table
+  anno_table <- anno_table %>% 
+    toolkit_tyj$relativeBins2TSS(flank.region = 5000, bins_flank = 50, bins_gene = 50, flank_scale = 1) %>%
+    mutate(Gene_type = ifelse(method == "Random", "Random", Gene_type),
+           Gene_type = ifelse(is.na(Gene_type), "Distal_enhancer", Gene_type))
+  table(anno_table$method, anno_table$Gene_type)
+
+### each kind of enhancer (deduct random)
+  # normalized to random
+  df <- anno_table %>%
+    dplyr::select(Gene_type, relativeBins) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, Gene_type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = Gene_type, 
+                values_from = Num, values_fill = 0)
+  df <- cbind(df$relativeBins, scale(as.matrix(df[,2:ncol(df)]))) %>% 
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    mutate(`Distal_enhancer` = `Distal_enhancer` - Random,
+           `TSenhancer` = `TSenhancer` - Random,
+           `HKenhancer` = `HKenhancer` - Random,
+           Random = 0) %>%
+    pivot_longer(cols = -relativeBins, 
+                 names_to = "Type", 
+                 values_to = "Count") %>%
+    dplyr::mutate(Type = str_replace_all(Type, c("HKenhancer" = "House-keeping enhancer",
+                                                    "TSenhancer" = "Tissue-specific enhancer",
+                                                    "Distal_enhancer" = "Distal enhancer")),
+           Type = factor(Type, levels = c("House-keeping enhancer", "Tissue-specific enhancer", 
+                                                    "Distal enhancer", "Random")))
+    
+  
+  # plot
+  library(ggformula)
+  df %>%
+    dplyr::filter(Type != "Random") %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.4, ymax = -3, fill = "grey80") +
+      geom_text(x = 25, y = -3.2, label = "Gene body", size = 2.5, color = "grey30") +
+      geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      geom_spline(aes(x = relativeBins, color = Type, y = Count)) +
+      # geom_line(aes(x = relativeBins, color = Type, y = Count)) +
+      scale_color_manual(values = toolkit_tyj$AtEn_TSHKDisRan_color) +
+      # scale_color_npg() +
+      # scale_linetype_manual(values = c(2, 1,1,1,1)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.76, 0.87),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+      
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_TTS_TSS_TS_HK_enhancer_deduct_Random_20210322",
+                       width = 8, height = 6)
+
+  # not normed
+  df <- anno_table %>%
+    dplyr::select(Gene_type, relativeBins) %>%
+    dplyr::filter(!is.na(relativeBins)) %>%
+    group_by(relativeBins, Gene_type) %>%
+    dplyr::summarise(Num = n()) %>%
+    pivot_wider(id_cols = relativeBins, names_from = Gene_type, 
+                values_from = Num, values_fill = 0)
+  df <- cbind(df$relativeBins, scale(as.matrix(df[,2:ncol(df)]))) %>% 
+    as.data.frame() %>%
+    dplyr::rename(relativeBins = V1) %>%
+    # mutate(`Distal_enhancer` = `Distal_enhancer` - Random,
+    #        `TSenhancer` = `TSenhancer` - Random,
+    #        `HKenhancer` = `HKenhancer` - Random,
+    #        Random = 0) %>%
+    pivot_longer(cols = -relativeBins, 
+                 names_to = "Type", 
+                 values_to = "Count") %>%
+    dplyr::mutate(Type = str_replace_all(Type, c("HKenhancer" = "House-keeping enhancer",
+                                                    "TSenhancer" = "Tissue-specific enhancer",
+                                                    "Distal_enhancer" = "Distal enhancer")),
+           Type = factor(Type, levels = c("House-keeping enhancer", "Tissue-specific enhancer", 
+                                                    "Distal enhancer", "Random")))
+    
+  
+  # plot
+  library(ggformula)
+  df %>%
+    # dplyr::filter(Type != "Random") %>%
+    ggplot() + 
+      toolkit_tyj$theme_my +
+      geom_rect(xmin = 0, xmax = 50, ymin = -3.4, ymax = -3, fill = "grey80") +
+      geom_text(x = 25, y = -3.2, label = "Gene body", size = 2.5, color = "grey30") +
+      # geom_hline(yintercept = 0, linetype = 3, color = "grey40") +
+      geom_spline(aes(x = relativeBins, color = Type, y = Count, linetype = Type)) +
+      # geom_line(aes(x = relativeBins, color = Type, y = Count)) +
+      scale_color_manual(values = toolkit_tyj$AtEn_TSHKDisRan_color) +
+      # scale_color_brewer(palette = "Dark2") +
+      # scale_color_npg() +
+      scale_linetype_manual(values = c(1,1,1,4)) +
+      xlab(label = "Distance to TSS/TTS (kb)") + 
+      ylab(label = "Relative density") + 
+      scale_x_continuous(breaks = c(-50, -25, 0, 10, 20, 30, 40, 50, 75, 100),
+                         labels = c("-5", "-2.5", "TSS", "20%", "40%", "60%", "80%", "TTS",
+                                    "2.5", "5")) +
+      theme(legend.key.size = unit(0.4, units = "cm"), 
+          legend.position = c(0.76, 0.77),
+          # legend.position = "none",
+          legend.title = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+      
+  toolkit_tyj$SavePlot(filename_prefix = "./R4.Distribution_of_enhancers/Enhancer_distribution_TTS_TSS_TS_HK_enhancer_Not_deduct_Random_20210322",
+                       width = 8, height = 4.5)
+
+```
+
+### .x revise (Percentage of enhancers located in intergenic region)
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+
+# # relative position of enhancers were calculated based on center 1bp.
+#   load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+#   # load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_iSTARR_cSTARR_20210415.bin")
+#   map_dfr(anno_list, function(x){
+#     as.data.frame(x@annoStat)
+#   }, .id = "CRE") %>%
+#     # dplyr::filter(CRE == "cSTARR-seq" | CRE == "Random") %>%
+#     pivot_wider(names_from = CRE, values_from = Frequency) %>%
+#     fwrite("./R4.Distribution_of_enhancers/Summary_of_CRE_peak_percentage_in_genomic_region.csv")
+#   
+# summary of A.t genome (TAIR10)
+  library(TxDb.Athaliana.BioMart.plantsmart28)
+  ATgene <- genes(TxDb.Athaliana.BioMart.plantsmart28)
+  hist(width(ATgene))
+  ATchr <- data.frame(seqnames = names(seqlengths(TxDb.Athaliana.BioMart.plantsmart28)), 
+                   start = 1, end = seqlengths(TxDb.Athaliana.BioMart.plantsmart28)) %>%
+    makeGRangesFromDataFrame()
+  ATintergenic <- GenomicRanges::setdiff(ATchr, GenomicRanges::reduce(ATgene), ignore.strand = T)
+  
+  sum(width(ATchr))/ 1e6
+  sum(width(GenomicRanges::reduce(ATgene))) / 1e6
+  sum(width(ATintergenic)) / 1e6
+  
+  quantile(width(ATintergenic))
+  
+  NA
+```
+
+
+# Distribution (GAT)
+Overlap between CRE and genomic regions. (`4.1`)
+
+
+# Expression
+## .0 Annotate
+
+### . EXP X With/without
+Contain TE-derived enhancers or not: set "noTE_enhancer".
+
+#### . Count
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  noTE_enhancer <- F
+  if (noTE_enhancer) {
+    gene_tab <- fread("./R6.expression/Gene_list_with_Enhancer_STARRseq_noTE_500TSS100_300TTS300_20220516.csv.gz")
+  }else{
+    gene_tab <- fread("./R6.expression/Gene_list_with_CREs_500TSS100_300TTS300_20210322.csv.gz")
+  }
+  gene_tab <- gene_tab[,str_detect(colnames(gene_tab), "(cre_|cluster)", negate = T)]
+
+# fill NA as 0
+  for (i in str_detect(colnames(gene_tab), "Number")) {
+    gene_tab[,i][is.na(gene_tab[,i])] <- 0
+  }
+
+# Count enhancers located near genes
+  gene_tab$Num_cSTARRseq <- gene_tab$`TSS_cSTARR-seq_Number` + gene_tab$`TTS_cSTARR-seq_Number` + gene_tab$`GeneBody_cSTARR-seq_Number`
+  gene_tab$cSTARRseq <- ifelse(gene_tab$Num_cSTARRseq > 0, "With enhancer", "Without enhancer")
+    
+  if (!noTE_enhancer) {
+    gene_tab$Num_Enhancer_Zhu2015 <- gene_tab$TSS_Enhancer_Zhu2015_Number + gene_tab$TTS_Enhancer_Zhu2015_Number + gene_tab$GeneBody_Enhancer_Zhu2015_Number
+    gene_tab$Num_Enhancer_Wang2019 <- gene_tab$TSS_Enhancer_Wang2019_Number + gene_tab$TTS_Enhancer_Wang2019_Number + gene_tab$GeneBody_Enhancer_Wang2019_Number
+    gene_tab$Enhancer_Zhu2015 <- ifelse(gene_tab$Num_Enhancer_Zhu2015 > 0, "With enhancer", "Without enhancer")
+    gene_tab$Enhancer_Wang2019 <- ifelse(gene_tab$Num_Enhancer_Wang2019 > 0, "With enhancer", "Without enhancer")
+  }
+```
+
+#### .  Exp x En_Num
+```{r}
+# number of genes with varied flanking enhancers
+  p <- gene_tab %>%
+    dplyr::select(gene_id, Num_Enhancer_Wang2019, Num_cSTARRseq, Num_Enhancer_Zhu2015) %>%
+    pivot_longer(cols = Num_Enhancer_Wang2019:Num_Enhancer_Zhu2015, names_to = "Enhancer", values_to = "Number") %>%
+    dplyr::filter(Number > 0) %>%
+    group_by(Enhancer, Number) %>%
+    dplyr::summarise(Count = n()) %>%
+    pivot_wider(id_cols = Enhancer, names_from = Number, values_from = Count, values_fill = 0) %>%
+    pivot_longer(cols = 2:9, names_to = "Number", values_to = "Count") %>%
+    dplyr::mutate(Number = factor(Number),
+                  Count = ifelse(Count == 0, NA, Count)) %>%
+    ggplot(aes(x = Number, color = Enhancer, fill = Enhancer, y = Count)) + 
+      geom_col(position = position_dodge(), width = 0.7) + 
+      scale_color_npg() + 
+      scale_fill_npg() + 
+      toolkit_tyj$theme_my +
+      theme(legend.position = c(0.7, 0.9), 
+            legend.key.size = unit(0.3, units = "cm"), 
+            legend.text = element_text(size = 7), 
+            legend.title = element_blank()) +
+      # scale_y_log10() + 
+      geom_text(aes(x = Number, y = (Count + 1)/2, label = Count), 
+                color = "grey30",
+                size = 1.5,
+                position = position_dodge(width = 0.8)) + 
+      ggtitle("Genes with flanking enhancers") + 
+      labs(caption = "cSTARR-seq enhancer, enrichment > 1.3")
+  # toolkit_tyj$SavePlot(filename_prefix = "./R6.expression/Number_genes_with_enhancers_STARRseq1.3_20210322", 
+  #                      width = 10, height = 8, plot = p)
+
+# relationship between RPKM and enhancer number
+  df <- gene_tab %>%
+    as_tibble() %>%
+    dplyr::mutate(type = ifelse(Num_cSTARRseq == 1, "1", "None"),
+                  type = ifelse(Num_cSTARRseq == 2, "2", type),
+                  type = ifelse(Num_cSTARRseq >2 , ">=3", type),
+                  type = factor(type, levels = c("None", "1", "2", ">=3"))) 
+  
+  # all gene
+  df_label <- df %>%
+    toolkit_tyj$MultiComparison2(., Name_variable1 = NA, Name_variable2 = "type", 
+                                 Name_value = "RPKM", test.name = "kruskal", OnlyDF = T) %>%
+    dplyr::mutate(label_n = str_c(sigLabel, "\n", Num_var2_level, sep = ""),
+                  type = factor(type, levels = c("None", "1", "2", ">=3"))) %>%
+    arrange(type)
+  df %>%
+    ggplot(aes(x = type, y = log10(RPKM + 1)))  + 
+      toolkit_tyj$theme_my + 
+      geom_boxplot(width = 0.1, outlier.shape = NA, fill = "transparent") + 
+      geom_violin(fill = "transparent", scale = "width") +
+      geom_text(data = df_label, aes(x = type, y = 4, label = sigLabel), 
+                size = 6/.pt, ) + 
+      xlab("Number of enhancers") + 
+      scale_x_discrete(labels = str_c(df_label$type, "\n(", df_label$Num_var2_level, ")"))
+  
+  FileName <- ifelse(noTE_enhancer, "Expression_genes_with_varied_flanking_noTEenhancers",
+                     "Expression_genes_with_varied_flanking_enhancers")
+  # toolkit_tyj$SavePlot(filename_prefix = str_c("./R6.expression/", FileName),
+  #                      width = 4, height = 6, device = c("png", "pdf"))
+  
+  # Tissue-specific and House-keeping
+  df_label <- df %>%
+    toolkit_tyj$MultiComparison2(., Name_variable1 = "Gene_type", Name_variable2 = "type", 
+                                 Name_value = "RPKM", test.name = "kruskal", OnlyDF = T) %>%
+    dplyr::mutate(label_n = str_c(sigLabel, "\n", Num_var2_level, sep = ""))
+  df %>%
+    ggplot(aes(x = type, y = log10(RPKM + 1)))  + 
+      toolkit_tyj$theme_my + 
+      geom_boxplot(width = 0.1, outlier.shape = NA, fill = "transparent") + 
+      geom_violin(fill = "transparent", scale = "width") +
+      geom_text(data = df_label, aes(x = type, y = 4, label = label_n), 
+                size = 6/.pt, ) + 
+      facet_grid(. ~ Gene_type) +
+      xlab("Number of enhancers")
+  FileName <- ifelse(noTE_enhancer, "Expression_TSHKgenes_with_varied_flanking_noTEenhancers",
+                     "Expression_TSHKgenes_with_varied_flanking_enhancers")
+  # toolkit_tyj$SavePlot(filename_prefix = str_c("./R6.expression/", FileName),
+  #                      width = 8, height = 6, device = "png")
+
+```
+
+#### . Exp X with/without En
+```{r}
+# RPKM ~ enhancer
+  gene_tab %>%
+    dplyr::select(gene_id, RPKM, cSTARRseq, Enhancer_Zhu2015, Enhancer_Wang2019) %>%
+    dplyr::mutate(Random = "Random") %>%
+    pivot_longer(cols = cSTARRseq:Random, names_to = "Enhancer", values_to = "States") %>%
+    mutate(RPKM = log10(RPKM + 1)) %>%
+    ggplot(aes(x = Enhancer, y = RPKM, color = States)) + 
+      geom_hline(yintercept = median(log10(gene_tab$RPKM + 1)), linetype = 2, color = "grey40") +
+      geom_violin(fill = "transparent", position = position_dodge(width = 1)) + 
+      geom_boxplot(fill = "transparent", outlier.alpha = 0, width = 0.05, 
+                   position = position_dodge(width = 1)) +
+      toolkit_tyj$theme_my + 
+      # scale_color_npg() + 
+      scale_color_manual(values = c("grey50", "#E64B35FF", "#4DBBD5FF")) +
+      theme(legend.title = element_blank(), 
+            legend.position = "right", 
+            legend.key.size = unit(0.3, units = "cm"),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+  
+  # toolkit_tyj$SavePlot(filename_prefix = "./R6.expression/Expression_of_gene_with_without_enhancer_STARRseq1.3_20210322",
+  #                      width = 14, height = 10)
+  
+  df <- gene_tab %>%
+    dplyr::select(gene_id, RPKM, cSTARRseq) %>%
+    dplyr::mutate(Random = "All\ngenes") %>%
+    pivot_longer(cols = cSTARRseq:Random, names_to = "Enhancer", values_to = "States") %>%
+    mutate(States = factor(States, levels = c("With enhancer", "Without enhancer", "All\ngenes"))) %>%
+    dplyr::filter(Enhancer == "cSTARRseq" |Enhancer == "Random") 
+  df_label <- df %>%
+    toolkit_tyj$MultiComparison2(df = ., Name_variable1 = NA, Name_variable2 = "States",
+                                 Name_value = "RPKM", test.name = "kruskal", OnlyDF = T) %>%
+    dplyr::mutate(States = factor(States, c("With enhancer", "Without enhancer", "All\ngenes")),
+                  xlabel = str_c(States, "\n(", Num_var2_level, ")")) %>%
+    arrange(States)
+  
+  
+  df %>%
+    ggplot(aes(x = States, y = log10(RPKM + 1), color = States)) + 
+      geom_hline(yintercept = median(log10(gene_tab$RPKM + 1)), linetype = 2, color = "grey40") +
+      geom_violin(fill = "transparent", position = position_dodge(width = 1), scale = "width") + 
+      geom_boxplot(fill = "transparent", outlier.alpha = 0, width = 0.1, 
+                   position = position_dodge(width = 1)) +
+      toolkit_tyj$theme_my + 
+      # scale_color_npg() + 
+      # geom_signif(comparisons = list(c("With enhancer", "Random"), 
+      #                                c("With enhancer", "Without enhancer"),
+      #                                c("Random", "Without enhancer")), 
+      #             y_position = c(4.5, 4.1, 3.7), textsize = 6/.pt, 
+      #             color = "grey30", test = "wilcox.test", size = 0.2) +
+      geom_text(aes(x = States, y = 4, label = sigLabel), size = 6/.pt, data = df_label,
+                color = "grey15") +
+      scale_color_manual(values = toolkit_tyj$AtEn_YNRandom) +
+      theme(legend.title = element_blank(), 
+            legend.position = "none", 
+            legend.key.size = unit(0.3, units = "cm"),
+            # axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), 
+            axis.title.x = element_blank()) +
+      ylab(expression(log[10](RPKM+1))) + 
+      # coord_cartesian(ylim = c(0, 4.7)) + 
+      scale_x_discrete(labels = str_replace_all(df_label$xlabel, " ", "\n"))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R6.expression/Expression_of_gene_with_without_STARRseq1.3_noTE_20210322",
+                       width = 4, height = 4.26, units = "cm")
+```
+
+### . 2 Exp X En_Act 
+
+#### .all En (no TE-derived enhancers)
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  enhancer <- fread("Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_IntronicEn_TE_20220424.csv.gz") %>%
+    mutate(seqnames = str_replace_all(seqnames, "chr", "")) %>%
+    dplyr::filter(str_detect(method, "(cSTARR)")) %>%
+    dplyr::mutate(name = str_c(method, seqnames, start, "K4=", clusterK4, "K7=", clusterK7, sep = "_")) %>%
+    dplyr::filter(!(method == "cSTARR-seq" & enrichment <= 1.3 ))
+  table(enhancer$TE_SuperFamily)
+  
+  # no TE-derived enhancers
+  enhancer <- enhancer %>%
+    dplyr::filter(str_length(TE) < 2, 
+                  # clusterK4 == 1|clusterK4 == 4
+                  )
+  
+## parameters
+  TSS_region <- c(-500, 100) # c(upstream, downstream)
+  TTS_region <- c(-300, 300)
+  
+  
+## prepare regions.
+  library(TxDb.Athaliana.BioMart.plantsmart28)
+  txdb <- TxDb.Athaliana.BioMart.plantsmart28
+  genes_hg <- genes(txdb) # TSS to TTS
+  
+  # TSS
+  TSS_gene <- resize(genes_hg, fix = "start", width = 1, use.names = T)
+  TSS_gene <- TSS_gene %>%
+    shift(shift = ifelse(strand(TSS_gene) == "+", sum(TSS_region) / 2, (0 - sum(TSS_region) / 2))) %>%
+    GenomicRanges::resize(width = sum(abs(TSS_region)), fix = "center")
+  
+  # TTS
+  TTS_gene <- resize(genes_hg, width = 1, fix = "end", use.names = T)
+  TTS_gene <- TTS_gene %>%
+    shift(shift = ifelse(strand(TTS_gene) == "+", sum(TTS_region) / 2, (0 - sum(TTS_region) / 2))) %>%
+    GenomicRanges::resize(width = sum(abs(TTS_region)), fix = "center")
+  
+## mark CRE (peak) located in different gene region
+  gene_tab <- as.data.frame(genes_hg)
+  cre_tab <- enhancer
+  
+  # gene body
+  ol <- findOverlaps(genes_hg, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$enrichment[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    dplyr::summarise(cre_GeneBody = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+  # TSS region
+  ol <- findOverlaps(TSS_gene, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$enrichment[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    dplyr::summarise(cre_TSS = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+  # TTS region
+  ol <- findOverlaps(TTS_gene, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$enrichment[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    dplyr::summarise(cre_TTS = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+ ## merge with gene expression
+  GeneExp <- fread("./refgenome/RNA/GSE34318_leaf_mean_FPKM_20210321.tsv.gz") %>%
+    dplyr::select(id, RPKM) %>%
+    dplyr::rename(gene_id = id)
+  
+  gene_tab <- left_join(gene_tab, GeneExp)
+  
+
+## Gene types: House-keeping or Tissue-specific
+  HKgenes <- fread("./refgenome/Arabidopsis_thaliana_HouseKeeping_genes_10.1111.tpj.13415.tsv") %>%
+    dplyr::mutate(gene_id = str_replace_all(`Transcript ID`,"(AT.+)\\.\\d+", "\\1"))
+  gene_tab$Gene_type <- "Tissue-specific"
+  gene_tab$Gene_type[gene_tab$gene_id %in% HKgenes$gene_id] <- "House-keeping"
+
+## Calculate Activity of Enhancer.
+  gene_tab$Max_Act <- apply(gene_tab %>% dplyr::select(contains("cre")), 1, function(x){
+    x %>%
+      na.omit() %>%
+      str_c(., collapse = "#")
+  }) %>%
+    map(., function(y){
+      strsplit(x = y, split = "#", fixed = T) %>%
+        unlist() %>%
+        as.numeric() %>%
+        max(na.rm = T) %>%
+        return()
+    }) %>%
+    unlist()
+  
+  # scatterplot
+  library(ggpmisc)
+  my.formula <- y ~ x -1
+  df <-  gene_tab %>%
+    dplyr::filter(Max_Act > 0) %>%
+    as_tibble 
+  library(ggrastr)
+  df %>%
+    ggplot(aes(x = Max_Act, y = log10(RPKM + 1))) +
+        # geom_point(shape = 1, alpha = 1/3) +
+        geom_text(x = 2.25, y = 3.2, 
+                  label = str_c("PCC=",
+                                round(cor(df$RPKM, df$Max_Act, use = "pairwise.complete.obs"), 4),
+                                "    p=", 
+                                round(cor.test(df$RPKM, df$Max_Act, use = "pairwise.complete.obs")$p.value, 4)),
+                  size = 6/.pt, check_overlap = T, fontface = "italic") +
+        geom_point_rast(shape = 1, alpha = 1/3, dpi = 600, bg = "transparent", size = 0.5) +
+        # geom_smooth(method = "lm", se= T, color="steelblue", formula = my.formula, size = 0.5) +
+        # stat_poly_eq(formula = my.formula,
+        #              aes(label = paste(..eq.label.., ..rr.label.., ..p.value.label.., sep = "~~~")),
+        #              parse = TRUE, size = 2) +
+        toolkit_tyj$theme_my + 
+      xlab("Enhancer activity") + 
+      ylab(expression(Gene~expression~level~(log[10]^(RPKM+1))))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R6.expression/Scatterplot_Exp_vs_EnAct_allEnhancers_noTE",
+                       width = 6.5, height = 6)
+```
+
+#### .all En + DHS bins (All enhancers)
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  enhancer <- fread("Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_IntronicEn_TE_20220424.csv.gz") %>%
+    mutate(seqnames = str_replace_all(seqnames, "chr", "")) %>%
+    dplyr::filter(str_detect(method, "(cSTARR)")) %>%
+    dplyr::mutate(name = str_c(method, seqnames, start, "K4=", clusterK4, "K7=", clusterK7, sep = "_")) %>%
+    dplyr::filter(!(method == "cSTARR-seq" & enrichment <= 1.3 ))
+  table(enhancer$TE_SuperFamily)
+  
+## parameters
+  TSS_region <- c(-500, 100) # c(upstream, downstream)
+  TTS_region <- c(-300, 300)
+  
+  
+## prepare regions.
+  library(TxDb.Athaliana.BioMart.plantsmart28)
+  txdb <- TxDb.Athaliana.BioMart.plantsmart28
+  genes_hg <- genes(txdb) # TSS to TTS
+  
+  # TSS
+  TSS_gene <- resize(genes_hg, fix = "start", width = 1, use.names = T)
+  TSS_gene <- TSS_gene %>%
+    shift(shift = ifelse(strand(TSS_gene) == "+", sum(TSS_region) / 2, (0 - sum(TSS_region) / 2))) %>%
+    GenomicRanges::resize(width = sum(abs(TSS_region)), fix = "center")
+  
+  # TTS
+  TTS_gene <- resize(genes_hg, width = 1, fix = "end", use.names = T)
+  TTS_gene <- TTS_gene %>%
+    shift(shift = ifelse(strand(TTS_gene) == "+", sum(TTS_region) / 2, (0 - sum(TTS_region) / 2))) %>%
+    GenomicRanges::resize(width = sum(abs(TTS_region)), fix = "center")
+  
+## mark CRE (peak) located in different gene region
+  gene_tab <- as.data.frame(genes_hg)
+  cre_tab <- enhancer
+  
+  # gene body
+  ol <- findOverlaps(genes_hg, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$enrichment[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    summarise(cre_GeneBody = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+  # TSS region
+  ol <- findOverlaps(TSS_gene, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$enrichment[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    summarise(cre_TSS = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+  # TTS region
+  ol <- findOverlaps(TTS_gene, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$enrichment[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    summarise(cre_TTS = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+ ## merge with gene expression
+  GeneExp <- fread("./refgenome/RNA/GSE34318_leaf_mean_FPKM_20210321.tsv.gz") %>%
+    dplyr::select(id, RPKM) %>%
+    dplyr::rename(gene_id = id)
+  
+  gene_tab <- left_join(gene_tab, GeneExp)
+  
+
+## Gene types: House-keeping or Tissue-specific
+  HKgenes <- fread("./refgenome/Arabidopsis_thaliana_HouseKeeping_genes_10.1111.tpj.13415.tsv") %>%
+    dplyr::mutate(gene_id = str_replace_all(`Transcript ID`,"(AT.+)\\.\\d+", "\\1"))
+  gene_tab$Gene_type <- "Tissue-specific"
+  gene_tab$Gene_type[gene_tab$gene_id %in% HKgenes$gene_id] <- "House-keeping"
+
+## Calculate Activity of Enhancer.
+  gene_tab$Max_Act <- apply(gene_tab %>% dplyr::select(contains("cre")), 1, function(x){
+    x %>%
+      na.omit() %>%
+      str_c(., collapse = "#")
+  }) %>%
+    map(., function(y){
+      strsplit(x = y, split = "#", fixed = T) %>%
+        unlist() %>%
+        as.numeric() %>%
+        max(na.rm = T) %>%
+        return()
+    }) %>%
+    unlist()
+  
+  # scatterplot
+  library(ggpmisc)
+  my.formula <- y ~ x -1
+  df <-  gene_tab %>%
+    dplyr::filter(Max_Act > 0) %>%
+    as_tibble 
+  library(ggrastr)
+  df %>%
+    ggplot(aes(x = Max_Act, y = log10(RPKM + 1))) +
+        # geom_point(shape = 1, alpha = 1/3) +
+        geom_text(x = 2, y = 3.2, 
+                  label = str_c("p=", 
+                                round(cor.test(df$RPKM, df$Max_Act, use = "pairwise.complete.obs")$p.value, 4),
+                                "  r=",
+                                round(cor(df$RPKM, df$Max_Act, use = "pairwise.complete.obs"), 4)),
+                  size = 6/.pt, check_overlap = T, fontface = "italic") +
+        geom_point_rast(shape = 1, alpha = 1/3, dpi = 600) +
+        geom_smooth(method = "lm", se= T, color="steelblue", formula = my.formula, size = 0.5) +
+        # stat_poly_eq(formula = my.formula,
+        #              aes(label = paste(..eq.label.., ..rr.label.., ..p.value.label.., sep = "~~~")),
+        #              parse = TRUE, size = 2) +
+        toolkit_tyj$theme_my + 
+      xlab("Enhancet activity") + 
+      ylab(expression(log[10]^(RPKM+1)))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R6.expression/Scatterplot_Exp_vs_EnAct",
+                       width = 6, height = 6)
+  
+  
+  
+```
+
+
+```{r}
+  rm(list = ls())
+  source("D:/SUST/code/TanYongjun_code.R")
+  enhancer <- fread("Enhancers_DHS_STARRseq1.3_H3K4_subsetChrState_PCA_score_Kmeans4-7_RPKM_ActCluster_IntronicEn_TE_20220424.csv.gz") %>%
+    mutate(seqnames = str_replace_all(seqnames, "chr", "")) %>%
+    dplyr::filter(str_detect(method, "(cSTARR)")) %>%
+    dplyr::mutate(name = str_c(method, seqnames, start, "K4=", clusterK4, "K7=", clusterK7, sep = "_")) %>%
+    dplyr::filter(!(method == "cSTARR-seq" & enrichment <= 1.3 ))
+  table(enhancer$TE_SuperFamily)
+  
+## parameters
+  TSS_region <- c(-500, 100) # c(upstream, downstream)
+  TTS_region <- c(-300, 300)
+  
+  
+## prepare regions.
+  library(TxDb.Athaliana.BioMart.plantsmart28)
+  txdb <- TxDb.Athaliana.BioMart.plantsmart28
+  genes_hg <- genes(txdb) # TSS to TTS
+  
+  # TSS
+  TSS_gene <- resize(genes_hg, fix = "start", width = 1, use.names = T)
+  TSS_gene <- TSS_gene %>%
+    shift(shift = ifelse(strand(TSS_gene) == "+", sum(TSS_region) / 2, (0 - sum(TSS_region) / 2))) %>%
+    GenomicRanges::resize(width = sum(abs(TSS_region)), fix = "center")
+  
+  # TTS
+  TTS_gene <- resize(genes_hg, width = 1, fix = "end", use.names = T)
+  TTS_gene <- TTS_gene %>%
+    shift(shift = ifelse(strand(TTS_gene) == "+", sum(TTS_region) / 2, (0 - sum(TTS_region) / 2))) %>%
+    GenomicRanges::resize(width = sum(abs(TTS_region)), fix = "center")
+  
+## mark CRE (peak) located in different gene region
+  gene_tab <- as.data.frame(genes_hg)
+  cre_tab <- enhancer
+  
+  # gene body
+  ol <- findOverlaps(genes_hg, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$name[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    summarise(cre_GeneBody = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+  # TSS region
+  ol <- findOverlaps(TSS_gene, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$name[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    summarise(cre_TSS = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+  # TTS region
+  ol <- findOverlaps(TTS_gene, 
+                     GenomicRanges::resize(makeGRangesFromDataFrame(cre_tab), 
+                                           width = 1, fix = "center")) %>%
+    as.data.frame()
+  ol$gene_id <- gene_tab$gene_id[ol$queryHits]
+  ol$cre_name <- cre_tab$name[ol$subjectHits]
+  ol <- ol %>%
+    dplyr::select(gene_id, cre_name) %>%
+    group_by(gene_id) %>%
+    summarise(cre_TTS = str_c(cre_name, collapse = "#"))
+  gene_tab <- full_join(gene_tab, ol)
+  
+ ## merge with gene expression
+  GeneExp <- fread("./refgenome/RNA/GSE34318_leaf_mean_FPKM_20210321.tsv.gz") %>%
+    dplyr::select(id, RPKM) %>%
+    dplyr::rename(gene_id = id)
+  
+  gene_tab <- left_join(gene_tab, GeneExp)
+  
+
+## Gene types: House-keeping or Tissue-specific
+  HKgenes <- fread("./refgenome/Arabidopsis_thaliana_HouseKeeping_genes_10.1111.tpj.13415.tsv") %>%
+    dplyr::mutate(gene_id = str_replace_all(`Transcript ID`,"(AT.+)\\.\\d+", "\\1"))
+  gene_tab$Gene_type <- "Tissue-specific"
+  gene_tab$Gene_type[gene_tab$gene_id %in% HKgenes$gene_id] <- "House-keeping"
+
+  
+## only keep the enhancer show max activity in STARR-seq
+  gene_tab <- gene_tab %>%
+    dplyr::filter(!is.na(cre_GeneBody) | !is.na(cre_TSS) | !is.na(cre_TTS)) %>%
+    dplyr::mutate(cre_all = apply(dplyr::select(., contains("cre")), 1, function(x){
+      x %>%
+        na.omit() %>%
+        str_c(., collapse = "#") %>%
+        str_split(., pattern = "#") %>%
+        unlist()
+    }))
+  
+  cre_tab <- enhancer %>%
+    dplyr::select(name, enrichment, DHS)
+  
+  tmp <- map_dfr(gene_tab$cre_all,
+             function(x){
+               row_id <- match(unlist(x), cre_tab$name)
+               H_act_rowid <- row_id[which.max(cre_tab$enrichment[row_id])]
+               return(cre_tab[H_act_rowid,])
+             }
+            )
+  gene_tab <- cbind(gene_tab, tmp)
+  
+  # cut into bins
+  CutIntoBins <- function(x, NumBins= 5){
+    breakLS <- c(-Inf, 
+                 quantile(x, probs = seq(0,1, by = 1/NumBins), na.rm = T)[c(2:(NumBins))],
+                 Inf)
+    cut(x, breaks = breakLS) %>%
+      return(.)
+  }
+  df <- gene_tab %>%
+    dplyr::mutate(DHS_bin = CutIntoBins(DHS, NumBins = 4) %>% as.numeric() %>% as.character(),
+                  Act_bin = CutIntoBins(enrichment, NumBins = 4) %>% as.numeric() %>% as.character()) %>%
+    dplyr::filter(!is.na(DHS), !is.na(enrichment), RPKM > 0)
+  
+  df_lab <- df %>%
+    dplyr::mutate(RPKM_Tran = log10(RPKM + 1)) %>%
+    toolkit_tyj$MultiComparison2(Name_variable2 = "Act_bin", Name_variable1 = "DHS_bin", Name_value = "RPKM_Tran")
+  df_lab <- df_lab$significant.label %>%
+    dplyr::mutate(Num_var2_level = str_c("(", Num_var2_level, ")"),
+                  Mean_y_format = round(Mean_y, 4),
+                  Mean = Mean_y)
+  
+  # boxplot and violinplot
+  library(shadowtext)
+  df %>%
+    left_join(., df_lab %>% dplyr::select(Act_bin, DHS_bin, Mean, Median_y)) %>%
+    ggplot(aes(x = Act_bin, y = log10(RPKM + 1))) + 
+      geom_violin(size = 0.5, color = "grey65", aes(fill = Mean)) +
+      geom_point(aes(x = Act_bin, y = Mean_y), data = df_lab, color = "grey15", size = 0.5) + 
+      # geom_boxplot(fill = "transparent", width = 0.2, outlier.shape = NA) +
+      facet_grid(DHS_bin ~ .) + 
+      toolkit_tyj$theme_my + 
+      geom_text(aes(x = Act_bin, y = 3.4, label = Num_var2_level), data = df_lab,
+                 size = 5/.pt, label.padding = unit(0.05, "cm"), color = "grey15") + 
+      geom_shadowtext(aes(x = Act_bin, y = Mean_y, label = Mean_y_format), data = df_lab,
+                 size = 5/.pt, color = "grey15", label.padding = unit(0.05, "cm"),
+                nudge_x = 0.3, nudge_y = 0.3, bg.colour='white') +
+      # scale_color_gradient2(high = brewer.pal(11, "RdYlGn")[1], 
+      #                # mid = brewer.pal(11, "RdYlGn")[6], 
+      #                low = brewer.pal(11, "RdYlGn")[9], midpoint = 1.1) + 
+      scale_fill_gradient2(high = brewer.pal(11, "RdYlGn")[1], 
+                     mid = brewer.pal(11, "RdYlGn")[6],
+                     low = brewer.pal(11, "RdYlGn")[9], midpoint = 1.1) +
+      theme(legend.key.width = unit(0.3, "cm"),
+            legend.margin = margin(0,0,0,-8),
+            panel.spacing = unit(0.05, "cm")) + 
+      xlab("STARR-seq signal") +
+      ylab(expression(log[10]^(RPKM+1)))
+  
+  toolkit_tyj$SavePlot(filename_prefix = "./R6.expression/Boxplot_DHSBins_ActBins_gene_expression",
+                       width = 8, height = 6)
+  
+  
+  
+```
+
+# Percentage of CRE hit by epigenetic region.
+
+`5.0`
+
+## .mark enhancers overlapped with DHSs
+
+```{r}
+  # load CRE
+  rm(list = ls())
+  load(file = "./R4.Distribution_of_enhancers/Enhancer_annotation_ChIPseeker_Peak_up500_down0_IntronicEnhancer_20210605.bin")
+  
+  # findoverlap
+  enSTARR <- enhancer %>%
+    dplyr::filter(ID == "cSTARR-seq", seqnames != "Mt")
+  enSTARRGR <- makeGRangesFromDataFrame(enSTARR)
+  
+  NA
+```
+
+
+# Epigenetic enrichment profile
+`5.1`
+
+
+# Kmeans heatmap
+`5.2`
+
+
+
+
+
+
+
+
+
+
+
